@@ -32,6 +32,8 @@ export async function loadConfig(): Promise<ZohoConfig> {
       mcpApiKey: secret.mcpApiKey ?? process.env.MCP_API_KEY,
       accountsBaseUrl: process.env.ZOHO_ACCOUNTS_BASE_URL ?? secret.accountsBaseUrl ?? DEFAULT_ACCOUNTS_BASE_URL,
       apiBaseUrl: process.env.ZOHO_API_BASE_URL ?? secret.apiBaseUrl ?? DEFAULT_API_BASE_URL,
+      accessToken: secret.accessToken,
+      accessTokenExpiresAt: secret.accessTokenExpiresAt,
     };
   }
 

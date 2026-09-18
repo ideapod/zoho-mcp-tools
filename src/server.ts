@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { loadConfig } from "./config.js";
 import { createMcpServer } from "./mcp/server.js";
+import { persistZohoAccessToken } from "./secrets.js";
 import { SprintsClient } from "./zoho/sprintsClient.js";
 import { ZohoTokenManager } from "./zoho/oauth.js";
 
@@ -27,7 +28,11 @@ function getContext(): Promise<AppContext> {
   if (!contextPromise) {
     contextPromise = (async () => {
       const config = await loadConfig();
-      const tokenManager = new ZohoTokenManager(config, config.accountsBaseUrl);
+      const seed =
+        config.accessToken && config.accessTokenExpiresAt
+          ? { accessToken: config.accessToken, expiresAt: config.accessTokenExpiresAt }
+          : undefined;
+      const tokenManager = new ZohoTokenManager(config, config.accountsBaseUrl, seed, persistZohoAccessToken);
       const client = new SprintsClient(tokenManager, config.apiBaseUrl, config.teamId);
       if (!config.mcpApiKey) {
         console.error(

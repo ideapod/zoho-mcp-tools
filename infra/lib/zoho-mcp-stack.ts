@@ -50,7 +50,11 @@ export class ZohoMcpStack extends Stack {
       logGroup,
     });
 
+    // grantWrite (not just grantRead) so the server can persist a freshly
+    // refreshed access token back into the secret - see
+    // src/secrets.ts#persistZohoAccessToken for why that matters.
     secret.grantRead(fn);
+    secret.grantWrite(fn);
 
     const fnUrl = fn.addFunctionUrl({
       authType: FunctionUrlAuthType.NONE,

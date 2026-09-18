@@ -15,7 +15,20 @@ export class ZohoTokenManager {
   constructor(
     private readonly credentials: ZohoCredentials,
     private readonly accountsBaseUrl: string,
-  ) {}
+    /**
+     * A still-valid access token to start warm with (e.g. persisted from a
+     * previous Lambda execution environment), so a cold start doesn't
+     * refresh against Zoho when the last token hasn't expired yet.
+     */
+    seed?: { accessToken: string; expiresAt: number },
+    /** Called with a freshly refreshed token, so callers can persist it (e.g. back to Secrets Manager). */
+    private readonly onRefresh?: (accessToken: string, expiresAt: number) => void,
+  ) {
+    if (seed) {
+      this.accessToken = seed.accessToken;
+      this.expiresAt = seed.expiresAt;
+    }
+  }
 
   async getAccessToken(): Promise<string> {
     if (this.accessToken && Date.now() < this.expiresAt - this.skewMs) {
@@ -43,6 +56,7 @@ export class ZohoTokenManager {
     }
     this.accessToken = data.access_token;
     this.expiresAt = Date.now() + data.expires_in * 1000;
+    this.onRefresh?.(this.accessToken, this.expiresAt);
     return this.accessToken;
   }
 }

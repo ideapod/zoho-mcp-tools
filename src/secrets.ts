@@ -1,4 +1,4 @@
-import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
+import { GetSecretValueCommand, PutSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 
 export interface ZohoSecret {
   clientId: string;
@@ -9,9 +9,19 @@ export interface ZohoSecret {
   /** Data-center-specific hosts, written by scripts/oauth-setup.ts. */
   accountsBaseUrl?: string;
   apiBaseUrl?: string;
+  /**
+   * A still-valid Zoho access token and its expiry (ms epoch), persisted
+   * here by persistZohoAccessToken() so a cold start can reuse it instead of
+   * refreshing against Zoho every time - see that function for why this
+   * matters.
+   */
+  accessToken?: string;
+  accessTokenExpiresAt?: number;
 }
 
 let cached: ZohoSecret | undefined;
+let cachedSecretId: string | undefined;
+let cachedRegion: string | undefined;
 
 /**
  * Fetches the Zoho OAuth credentials secret from AWS Secrets Manager, once
@@ -39,6 +49,28 @@ export async function loadZohoSecret(secretId: string, region: string): Promise<
     mcpApiKey: parsed.mcpApiKey,
     accountsBaseUrl: parsed.accountsBaseUrl,
     apiBaseUrl: parsed.apiBaseUrl,
+    accessToken: parsed.accessToken,
+    accessTokenExpiresAt: parsed.accessTokenExpiresAt,
   };
+  cachedSecretId = secretId;
+  cachedRegion = region;
   return cached;
+}
+
+/**
+ * Writes a freshly refreshed Zoho access token back into the same secret so
+ * the next cold start can reuse it instead of hitting Zoho's refresh
+ * endpoint again. Without this, a container that churns roughly every 30s
+ * (e.g. an MCP client's keep-alive reconnects, which don't share in-memory
+ * state across Lambda execution environments) re-refreshes continuously
+ * even though Zoho's tokens last an hour - which Zoho's own abuse
+ * protection responds to with invalid_client. No-ops if the config wasn't
+ * loaded from Secrets Manager (e.g. local dev via plain env vars).
+ */
+export async function persistZohoAccessToken(accessToken: string, expiresAt: number): Promise<void> {
+  if (!cached || !cachedSecretId || !cachedRegion) return;
+
+  cached = { ...cached, accessToken, accessTokenExpiresAt: expiresAt };
+  const client = new SecretsManagerClient({ region: cachedRegion });
+  await client.send(new PutSecretValueCommand({ SecretId: cachedSecretId, SecretString: JSON.stringify(cached) }));
 }

@@ -13,6 +13,9 @@ export interface ZohoConfig extends ZohoCredentials {
   teamId?: string;
   /** Shared-secret bearer token required on the /mcp endpoint, if set. */
   mcpApiKey?: string;
+  /** A still-valid access token to seed ZohoTokenManager with, persisted from a previous execution environment. */
+  accessToken?: string;
+  accessTokenExpiresAt?: number;
 }
 
 export interface AccessTokenResponse {
