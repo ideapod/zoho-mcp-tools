@@ -100,6 +100,20 @@ describe("SprintsClient", () => {
     expect(url.searchParams.get("range")).toBe("100");
   });
 
+  it("sends the mandatory action/index/range query params for listProjects", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "success", projects: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    await client.listProjects();
+
+    const url = fetchMock.mock.calls[0]![0] as URL;
+    expect(url.pathname).toBe("/zsapi/team/111/projects/");
+    expect(url.searchParams.get("action")).toBe("data");
+    expect(url.searchParams.get("index")).toBe("1");
+    expect(url.searchParams.get("range")).toBe("100");
+  });
+
   it("sends update fields as a JSON POST body", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "success", item: { id: "1" } }));
     vi.stubGlobal("fetch", fetchMock);

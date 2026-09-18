@@ -101,7 +101,11 @@ export class SprintsClient {
 
   async listProjects(): Promise<unknown[]> {
     const teamId = await this.ensureTeamId();
-    const data = await this.request<{ projects: unknown[] }>(`/team/${teamId}/projects/`);
+    // action/index/range are mandatory query params for this endpoint -
+    // omitting them returns a misleading "Given URL is wrong" 404.
+    const data = await this.request<{ projects: unknown[] }>(`/team/${teamId}/projects/`, {
+      query: { action: "data", index: 1, range: 100 },
+    });
     return data.projects ?? [];
   }
 
