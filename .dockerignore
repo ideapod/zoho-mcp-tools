@@ -1,0 +1,11 @@
+node_modules
+dist
+infra
+cdk.out
+test
+scripts
+.git
+.github
+.env
+.env.local
+*.md

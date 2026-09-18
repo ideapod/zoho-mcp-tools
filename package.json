@@ -1,0 +1,38 @@
+{
+  "name": "zoho-sprints-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Remote MCP server for managing the StoryTrail backlog/kanban board in Zoho Sprints",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc --watch",
+    "start": "node dist/src/local.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src scripts test infra",
+    "typecheck": "tsc --noEmit && tsc -p infra/tsconfig.json --noEmit",
+    "oauth:setup": "tsx scripts/oauth-setup.ts",
+    "cdk": "cdk"
+  },
+  "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.699.0",
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.15.0",
+    "@types/node": "^22.10.0",
+    "aws-cdk": "^2.170.0",
+    "aws-cdk-lib": "^2.170.0",
+    "constructs": "^10.4.2",
+    "eslint": "^9.15.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.16.0",
+    "vitest": "^5.0.1"
+  }
+}

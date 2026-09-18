@@ -1,0 +1,10 @@
+node_modules/
+dist/
+cdk.out/
+*.log
+.env
+.env.local
+.DS_Store
+infra/node_modules/
+.vscode/
+coverage/
