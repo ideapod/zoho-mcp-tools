@@ -67,3 +67,10 @@ export interface SprintsStatus {
   name: string;
   [key: string]: unknown;
 }
+
+export interface SprintsTag {
+  id: string;
+  name: string;
+  colorCode?: string;
+  [key: string]: unknown;
+}

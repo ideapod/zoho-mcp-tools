@@ -82,11 +82,15 @@ export function registerBacklogTools(server: McpServer, client: SprintsClient): 
     async ({ projectId, itemId, sprintId }) => {
       try {
         const listId = await resolveSprintOrBacklogId(client, projectId, sprintId);
-        const [item, comments] = await Promise.all([
+        const [item, comments, tagIds, allTags] = await Promise.all([
           client.getItem(projectId, listId, itemId),
           client.listItemComments(projectId, itemId).catch(() => []),
+          client.getItemTagIds(projectId, listId, itemId).catch(() => []),
+          client.listTags().catch(() => []),
         ]);
-        return toolTextResult({ ...item, comments });
+        const tagsById = new Map(allTags.map((t) => [t.id, t.name]));
+        const tags = tagIds.map((id) => ({ id, name: tagsById.get(id) ?? id }));
+        return toolTextResult({ ...item, comments, tags });
       } catch (error) {
         return toolErrorResult(error);
       }
@@ -187,6 +191,47 @@ export function registerBacklogTools(server: McpServer, client: SprintsClient): 
 
         const item = await client.updateItem(projectId, listId, itemId, fields);
         return toolTextResult(item);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "update_item_tags",
+    {
+      title: "Set tags on a backlog item",
+      description:
+        "Associates custom tags with an item. By default replaces the item's existing tags with the given " +
+        "list; pass mode 'add' to add tags without removing existing ones. Tags may be given by exact name or " +
+        "numeric ID.",
+      inputSchema: {
+        projectId: z.string().describe("Zoho Sprints project ID"),
+        itemId: z.string().describe("Item ID"),
+        sprintId: z.string().optional().describe("Sprint the item belongs to (omit if it's in the backlog)"),
+        tags: z.array(z.string()).min(1).describe("Tag names or IDs to associate with the item"),
+        mode: z
+          .enum(["replace", "add"])
+          .optional()
+          .describe("'replace' (default) removes the item's existing tags first; 'add' keeps them"),
+      },
+    },
+    async ({ projectId, itemId, sprintId, tags, mode }) => {
+      try {
+        const listId = await resolveSprintOrBacklogId(client, projectId, sprintId);
+        const allTags = await client.listTags();
+        const resolvedTags = tags.map((t) => {
+          const id = resolveEntityId(allTags, t, "tags");
+          return { id, name: allTags.find((tag) => tag.id === id)!.name };
+        });
+        await client.updateItemTags(
+          projectId,
+          listId,
+          itemId,
+          resolvedTags.map((t) => t.id),
+          mode !== "add",
+        );
+        return toolTextResult({ itemId, tags: resolvedTags });
       } catch (error) {
         return toolErrorResult(error);
       }

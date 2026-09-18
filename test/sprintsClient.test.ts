@@ -228,4 +228,59 @@ describe("SprintsClient", () => {
     expect(params.get("statusid")).toBe("42");
     expect(params.get("newusers")).toBe('["1","2"]');
   });
+
+  it("normalizes tags from the converted `tags` shape when present", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ status: "success", tags: [{ tagId: "t-1", tagName: "Content" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    const tags = await client.listTags();
+
+    expect(tags).toEqual([{ id: "t-1", name: "Content", tagId: "t-1", tagName: "Content" }]);
+  });
+
+  it("falls back to the raw zsTagJObj shape when listTags gets no `tags` key", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        status: "success",
+        zsTagJObj: { "85910000000074007": ["85910000000074007", "Content", "#fa335c", "3"] },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    const tags = await client.listTags();
+
+    expect(tags).toEqual([{ id: "85910000000074007", name: "Content", colorCode: "#fa335c" }]);
+  });
+
+  it("gets the tag IDs associated with an item", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "success", associateTagIds: ["t-1"] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    const tagIds = await client.getItemTagIds("proj-1", "backlog-1", "item-1");
+
+    const url = fetchMock.mock.calls[0]![0] as URL;
+    expect(url.pathname).toBe("/zsapi/team/111/projects/proj-1/sprints/backlog-1/item/item-1/tags/");
+    expect(url.searchParams.get("action")).toBe("itemassociatedtagIds");
+    expect(tagIds).toEqual(["t-1"]);
+  });
+
+  it("posts associateupdate with newtags/reassociate for updateItemTags", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "success" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    await client.updateItemTags("proj-1", "backlog-1", "item-1", ["t-1", "t-2"], true);
+
+    const init = fetchMock.mock.calls[0]![1] as { method: string; body: string };
+    expect(init.method).toBe("POST");
+    const params = new URLSearchParams(init.body);
+    expect(params.get("action")).toBe("associateupdate");
+    expect(params.get("newtags")).toBe('["t-1","t-2"]');
+    expect(params.get("reassociate")).toBe("true");
+  });
 });

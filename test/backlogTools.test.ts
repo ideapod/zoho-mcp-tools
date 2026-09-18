@@ -31,6 +31,12 @@ function fakeClient(overrides: Partial<Record<keyof SprintsClient, unknown>> = {
     getItemTypes: vi.fn(async () => [{ id: "t1", name: "Bug" }]),
     getItem: vi.fn(async () => ({ id: "1", title: "Item A" })),
     listItemComments: vi.fn(async () => []),
+    listTags: vi.fn(async () => [
+      { id: "tag1", name: "Frontend" },
+      { id: "tag2", name: "Backend" },
+    ]),
+    getItemTagIds: vi.fn(async () => []),
+    updateItemTags: vi.fn(async () => undefined),
     updateItem: vi.fn(async (_p: string, _s: string, id: string, fields: Record<string, unknown>) => ({
       id,
       ...fields,
@@ -126,5 +132,60 @@ describe("backlog tools", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toMatch(/No fields to update/);
+  });
+
+  it("update_item_tags resolves tag names to IDs and replaces by default", async () => {
+    const server = fakeServer();
+    const client = fakeClient();
+    registerBacklogTools(server as never, client);
+
+    const result = await server.tools.get("update_item_tags")!({
+      projectId: "proj-1",
+      itemId: "1",
+      tags: ["Frontend"],
+    });
+
+    expect(client.updateItemTags).toHaveBeenCalledWith("proj-1", "backlog-1", "1", ["tag1"], true);
+    expect(JSON.parse(result.content[0]!.text)).toEqual({ itemId: "1", tags: [{ id: "tag1", name: "Frontend" }] });
+  });
+
+  it("update_item_tags passes reassociate=false when mode is 'add'", async () => {
+    const server = fakeServer();
+    const client = fakeClient();
+    registerBacklogTools(server as never, client);
+
+    await server.tools.get("update_item_tags")!({
+      projectId: "proj-1",
+      itemId: "1",
+      tags: ["Backend"],
+      mode: "add",
+    });
+
+    expect(client.updateItemTags).toHaveBeenCalledWith("proj-1", "backlog-1", "1", ["tag2"], false);
+  });
+
+  it("update_item_tags returns an error result for an unknown tag", async () => {
+    const server = fakeServer();
+    const client = fakeClient();
+    registerBacklogTools(server as never, client);
+
+    const result = await server.tools.get("update_item_tags")!({
+      projectId: "proj-1",
+      itemId: "1",
+      tags: ["Nonexistent"],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toMatch(/No tags found/);
+  });
+
+  it("get_item includes the item's tags, resolved to names", async () => {
+    const server = fakeServer();
+    const client = fakeClient({ getItemTagIds: vi.fn(async () => ["tag2"]) });
+    registerBacklogTools(server as never, client);
+
+    const result = await server.tools.get("get_item")!({ projectId: "proj-1", itemId: "1" });
+
+    expect(JSON.parse(result.content[0]!.text).tags).toEqual([{ id: "tag2", name: "Backend" }]);
   });
 });

@@ -6,6 +6,7 @@ import type {
   SprintsPortal,
   SprintsSprint,
   SprintsStatus,
+  SprintsTag,
 } from "./types.js";
 
 interface RequestOptions {
@@ -227,6 +228,25 @@ export class SprintsClient {
     return (data.projPriorities ?? []).map((p) => withIdName(p, "projPriorityId", "priorityName"));
   }
 
+  /**
+   * Fetches all custom tags defined in the workspace (tags are workspace-scoped, not
+   * per-project - see apidoc.html#Gettags). x-convert-response's effect on this endpoint isn't
+   * documented anywhere (unlike statuses/item types/priorities, which were confirmed live) and
+   * hasn't been verified live, so this defensively also handles the raw shape the docs' example
+   * response shows: a `zsTagJObj` map of tagId -> [tagId, tagName, colorCode, createdBy].
+   */
+  async listTags(): Promise<SprintsTag[]> {
+    const teamId = await this.ensureTeamId();
+    const data = await this.request<{
+      tags?: Array<Record<string, unknown>>;
+      zsTagJObj?: Record<string, [string, string, string, string]>;
+    }>(`/team/${teamId}/tags/`, { query: { action: "data", index: 1, range: 1000 } });
+    if (data.tags) {
+      return data.tags.map((t) => withIdName(t, "tagId", "tagName")) as unknown as SprintsTag[];
+    }
+    return Object.values(data.zsTagJObj ?? {}).map(([id, name, colorCode]) => ({ id, name, colorCode }));
+  }
+
   /** Normalizes a raw item record (itemId/itemName/statusId/...) - see withIdName. */
   private normalizeItem(raw: Record<string, unknown>): SprintsItem {
     return withIdName(raw, "itemId", "itemName", "title") as unknown as SprintsItem;
@@ -296,6 +316,35 @@ export class SprintsClient {
       body: fields,
     });
     return this.getItem(projectId, sprintOrBacklogId, itemId);
+  }
+
+  /** Fetches the tag IDs currently associated with an item (see apidoc.html#Gettagsassociatedwithitem). */
+  async getItemTagIds(projectId: string, sprintOrBacklogId: string, itemId: string): Promise<string[]> {
+    const teamId = await this.ensureTeamId();
+    const data = await this.request<{ associateTagIds?: string[] }>(
+      `/team/${teamId}/projects/${projectId}/sprints/${sprintOrBacklogId}/item/${itemId}/tags/`,
+      { query: { action: "itemassociatedtagIds" } },
+    );
+    return data.associateTagIds ?? [];
+  }
+
+  /**
+   * Associates the given tag IDs with an item (see apidoc.html#Associateorupdateitemtag).
+   * `reassociate: true` replaces the item's existing tags with `tagIds`; `false` adds `tagIds`
+   * to whatever tags are already associated.
+   */
+  async updateItemTags(
+    projectId: string,
+    sprintOrBacklogId: string,
+    itemId: string,
+    tagIds: string[],
+    reassociate: boolean,
+  ): Promise<void> {
+    const teamId = await this.ensureTeamId();
+    await this.request(`/team/${teamId}/projects/${projectId}/sprints/${sprintOrBacklogId}/item/${itemId}/tags/`, {
+      method: "POST",
+      body: { action: "associateupdate", newtags: tagIds, reassociate },
+    });
   }
 
   /** Resolves the moduleId Sprints uses for work-item comments/notes (cached per process). */

@@ -22,6 +22,7 @@ notes/docs store later, Zoho WorkDrive has a confirmed, active REST API and woul
 | `get_item` | Full item detail including comments |
 | `create_item` | Create a backlog/sprint item |
 | `update_item` | Edit item fields |
+| `update_item_tags` | Set (or add to) the tags on an item |
 | `move_item_status` | Move an item between kanban columns |
 | `add_comment` | Comment on an item |
 
