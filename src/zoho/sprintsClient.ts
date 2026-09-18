@@ -230,21 +230,18 @@ export class SprintsClient {
 
   /**
    * Fetches all custom tags defined in the workspace (tags are workspace-scoped, not
-   * per-project - see apidoc.html#Gettags). x-convert-response's effect on this endpoint isn't
-   * documented anywhere (unlike statuses/item types/priorities, which were confirmed live) and
-   * hasn't been verified live, so this defensively also handles the raw shape the docs' example
-   * response shows: a `zsTagJObj` map of tagId -> [tagId, tagName, colorCode, createdBy].
+   * per-project - see apidoc.html#Gettags). Response key is "zsTags" (not "tags" or the
+   * "zsTagJObj" map the docs' example response shows) - confirmed live. Each record carries two
+   * different tag identifiers - "tagId" and "zsTagId" - and only "zsTagId" is what the
+   * associate-tag endpoint's newtags param accepts and what getItemTagIds's associateTagIds
+   * echoes back, also confirmed live by round-tripping an association.
    */
   async listTags(): Promise<SprintsTag[]> {
     const teamId = await this.ensureTeamId();
-    const data = await this.request<{
-      tags?: Array<Record<string, unknown>>;
-      zsTagJObj?: Record<string, [string, string, string, string]>;
-    }>(`/team/${teamId}/tags/`, { query: { action: "data", index: 1, range: 1000 } });
-    if (data.tags) {
-      return data.tags.map((t) => withIdName(t, "tagId", "tagName")) as unknown as SprintsTag[];
-    }
-    return Object.values(data.zsTagJObj ?? {}).map(([id, name, colorCode]) => ({ id, name, colorCode }));
+    const data = await this.request<{ zsTags?: Array<Record<string, unknown>> }>(`/team/${teamId}/tags/`, {
+      query: { action: "data", index: 1, range: 1000 },
+    });
+    return (data.zsTags ?? []).map((t) => withIdName(t, "zsTagId", "tagName")) as unknown as SprintsTag[];
   }
 
   /** Normalizes a raw item record (itemId/itemName/statusId/...) - see withIdName. */

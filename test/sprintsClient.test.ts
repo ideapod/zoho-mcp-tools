@@ -229,23 +229,11 @@ describe("SprintsClient", () => {
     expect(params.get("newusers")).toBe('["1","2"]');
   });
 
-  it("normalizes tags from the converted `tags` shape when present", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(jsonResponse({ status: "success", tags: [{ tagId: "t-1", tagName: "Content" }] }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
-    const tags = await client.listTags();
-
-    expect(tags).toEqual([{ id: "t-1", name: "Content", tagId: "t-1", tagName: "Content" }]);
-  });
-
-  it("falls back to the raw zsTagJObj shape when listTags gets no `tags` key", async () => {
+  it("normalizes tags from the zsTags shape, using zsTagId (not tagId) as the ID", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({
         status: "success",
-        zsTagJObj: { "85910000000074007": ["85910000000074007", "Content", "#fa335c", "3"] },
+        zsTags: [{ tagId: "global-1", zsTagId: "t-1", tagName: "Content", colorCode: "#fa335c" }],
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -253,7 +241,11 @@ describe("SprintsClient", () => {
     const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
     const tags = await client.listTags();
 
-    expect(tags).toEqual([{ id: "85910000000074007", name: "Content", colorCode: "#fa335c" }]);
+    // zsTagId, not the also-present tagId, is what the associate-tag endpoint expects - see
+    // listTags's comment.
+    expect(tags).toEqual([
+      { id: "t-1", name: "Content", tagId: "global-1", zsTagId: "t-1", tagName: "Content", colorCode: "#fa335c" },
+    ]);
   });
 
   it("gets the tag IDs associated with an item", async () => {
