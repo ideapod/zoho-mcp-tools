@@ -100,8 +100,8 @@ export class SprintsClient {
       if (value !== undefined) url.searchParams.set(key, String(value));
     }
 
-    const doFetch = async (token: string) =>
-      fetch(url, {
+    const doFetch = async (token: string) => {
+      const res = await fetch(url, {
         method: options.method ?? "GET",
         headers: {
           Authorization: `Zoho-oauthtoken ${token}`,
@@ -110,17 +110,27 @@ export class SprintsClient {
         },
         body: options.body ? toFormBody(options.body) : undefined,
       });
+      const text = await res.text();
+      const data = text ? (JSON.parse(text) as T & { status?: string; code?: number }) : ({} as T);
+      return { res, data };
+    };
 
     let token = await this.tokenManager.getAccessToken();
-    let res = await doFetch(token);
+    let { res, data } = await doFetch(token);
 
-    if (res.status === 401) {
+    // Zoho signals an invalid/expired access token as HTTP 400 with
+    // {code: 7601, message: "Invalid oauthToken"} (confirmed live) - not the
+    // 401 its own OAuth token-refresh endpoint uses - so a bare `res.status
+    // === 401` check misses this in practice. This matters more since
+    // access tokens are now persisted across cold starts (see
+    // ZohoTokenManager's seed/onRefresh): a token that Zoho invalidates
+    // before its stated expiry (e.g. superseded by a refresh from another
+    // process) needs this to self-heal instead of failing outright.
+    const isInvalidToken = res.status === 401 || (res.status === 400 && (data as { code?: number }).code === 7601);
+    if (isInvalidToken) {
       token = await this.tokenManager.refresh();
-      res = await doFetch(token);
+      ({ res, data } = await doFetch(token));
     }
-
-    const text = await res.text();
-    const data = text ? (JSON.parse(text) as T & { status?: string }) : ({} as T);
 
     if (!res.ok || (data as { status?: string }).status === "failure") {
       throw new SprintsApiError(`Zoho Sprints API error on ${path} (HTTP ${res.status})`, res.status, data);

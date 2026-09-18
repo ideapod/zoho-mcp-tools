@@ -78,6 +78,33 @@ describe("SprintsClient", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("also retries on Zoho's actual invalid-token signal: HTTP 400 with code 7601", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ status: "failed", code: 7601, message: "Invalid oauthToken" }, 400))
+      .mockResolvedValueOnce(jsonResponse({ status: "success", items: [{ itemId: "1" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tokenManager = fakeTokenManager(["stale", "fresh"]);
+    const client = new SprintsClient(tokenManager, "https://sprintsapi.zoho.com/zsapi", "111");
+    await client.getItem("proj-1", "backlog-1", "1");
+
+    expect(tokenManager.refresh).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry on an unrelated HTTP 400", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "failed", code: 1234 }, 400));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tokenManager = fakeTokenManager();
+    const client = new SprintsClient(tokenManager, "https://sprintsapi.zoho.com/zsapi", "111");
+    await expect(client.getItem("proj-1", "backlog-1", "1")).rejects.toBeInstanceOf(SprintsApiError);
+
+    expect(tokenManager.refresh).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("throws a SprintsApiError when the API reports failure", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "failure", errorCode: 7600 }, 200));
     vi.stubGlobal("fetch", fetchMock);
