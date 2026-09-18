@@ -66,14 +66,14 @@ describe("SprintsClient", () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse({ status: "failure" }, 401))
-      .mockResolvedValueOnce(jsonResponse({ status: "success", item: { id: "1", title: "Retried" } }));
+      .mockResolvedValueOnce(jsonResponse({ status: "success", items: [{ itemId: "1", itemName: "Retried" }] }));
     vi.stubGlobal("fetch", fetchMock);
 
     const tokenManager = fakeTokenManager(["expired", "fresh"]);
     const client = new SprintsClient(tokenManager, "https://sprintsapi.zoho.com/zsapi", "111");
     const item = await client.getItem("proj-1", "backlog-1", "1");
 
-    expect(item).toEqual({ id: "1", title: "Retried" });
+    expect(item).toMatchObject({ itemId: "1", itemName: "Retried", id: "1", title: "Retried" });
     expect(tokenManager.refresh).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
@@ -87,7 +87,7 @@ describe("SprintsClient", () => {
   });
 
   it("builds listItems query params with sensible defaults", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "success", item: [] }));
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "success", items: [] }));
     vi.stubGlobal("fetch", fetchMock);
 
     const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
@@ -113,7 +113,7 @@ describe("SprintsClient", () => {
   });
 
   it("sends action=details for getItem and getProjectDetails", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "success", item: {} }));
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "success", items: [{ itemId: "item-1" }] }));
     vi.stubGlobal("fetch", fetchMock);
 
     const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
@@ -121,6 +121,52 @@ describe("SprintsClient", () => {
 
     const url = fetchMock.mock.calls[0]![0] as URL;
     expect(url.searchParams.get("action")).toBe("details");
+  });
+
+  it("normalizes item types/priorities/statuses to plain id/name, using the project-scoped ID", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          status: "success",
+          projItemTypes: [{ itemTypeId: "global-1", projItemTypeId: "proj-1", itemTypeName: "Task" }],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          status: "success",
+          projPriorities: [{ priorityId: "global-2", projPriorityId: "proj-2", priorityName: "High" }],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ status: "success", statuses: [{ statusId: "s-1", statusName: "To do" }] }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    const [itemTypes, priorities, statuses] = await Promise.all([
+      client.getItemTypes("proj-1"),
+      client.getPriorities("proj-1"),
+      client.getItemStatuses("proj-1"),
+    ]);
+
+    // The project-scoped ID, not the global one, since that's what
+    // Create/Update item's projitemtypeid/projpriorityid fields expect.
+    expect(itemTypes).toEqual([{ id: "proj-1", name: "Task", itemTypeId: "global-1", projItemTypeId: "proj-1", itemTypeName: "Task" }]);
+    expect(priorities[0]).toMatchObject({ id: "proj-2", name: "High" });
+    expect(statuses[0]).toMatchObject({ id: "s-1", name: "To do" });
+  });
+
+  it("normalizes epics to id/title (not id/name), matching how backlog.ts resolves epic names", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ status: "success", epics: [{ epicId: "e-1", epicName: "Launch" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    const epics = await client.listEpics("proj-1");
+
+    expect(epics[0]).toMatchObject({ id: "e-1", title: "Launch" });
   });
 
   it("sends the mandatory action/index/range query params for listProjects", async () => {
@@ -138,7 +184,11 @@ describe("SprintsClient", () => {
   });
 
   it("sends update fields as a form-urlencoded POST body, matching Zoho's docs", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "success", item: { id: "1" } }));
+    // updateItem's own POST response has no item payload (confirmed live) -
+    // it re-fetches via getItem afterward, which this same mock also serves.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ status: "success", items: [{ itemId: "item-1" }] }));
     vi.stubGlobal("fetch", fetchMock);
 
     const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");

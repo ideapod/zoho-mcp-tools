@@ -34,6 +34,25 @@ function toFormBody(body: Record<string, unknown>): string {
   return params.toString();
 }
 
+/**
+ * With x-convert-response: true, Zoho returns each entity as a flat object
+ * under its own oddly-specific field names (e.g. statusId/statusName,
+ * projItemTypeId/itemTypeName) rather than a generic id/name pair - none of
+ * this is documented (the docs only show the raw, unconverted response
+ * shape), so these were reverse-engineered against the live API. This adds
+ * plain id/name fields on top so resolveEntityId (name -> ID lookup) keeps
+ * working, while leaving the original fields in place for anything else
+ * that wants them.
+ */
+function withIdName<T extends Record<string, unknown>, K extends string = "name">(
+  raw: T,
+  idKey: string,
+  nameKey: string,
+  as: K = "name" as K,
+): T & { id: string } & Record<K, string> {
+  return { ...raw, id: String(raw[idKey]), [as]: String(raw[nameKey]) } as T & { id: string } & Record<K, string>;
+}
+
 export class SprintsApiError extends Error {
   constructor(
     message: string,
@@ -152,37 +171,55 @@ export class SprintsClient {
 
   async listEpics(projectId: string): Promise<SprintsEpic[]> {
     const teamId = await this.ensureTeamId();
-    const data = await this.request<{ epic: SprintsEpic[] }>(`/team/${teamId}/projects/${projectId}/epic/`, {
-      query: { action: "data", index: 1, range: 100 },
-    });
-    return data.epic ?? [];
+    // Response key is "epics" (plural) - not documented; the docs only show
+    // the raw/unconverted shape. Field names (epicId/epicName) follow the
+    // same convention confirmed live for statuses/item types/priorities
+    // below, but haven't been directly verified against a real epic.
+    const data = await this.request<{ epics: Array<Record<string, unknown>> }>(
+      `/team/${teamId}/projects/${projectId}/epic/`,
+      { query: { action: "data", index: 1, range: 100 } },
+    );
+    return (data.epics ?? []).map((e) => withIdName(e, "epicId", "epicName", "title")) as unknown as SprintsEpic[];
   }
 
   async getItemStatuses(projectId: string): Promise<SprintsStatus[]> {
     const teamId = await this.ensureTeamId();
-    const data = await this.request<{ itemstatus: SprintsStatus[] }>(
+    // Response key is "statuses", not "itemstatus" - confirmed live.
+    const data = await this.request<{ statuses: Array<Record<string, unknown>> }>(
       `/team/${teamId}/projects/${projectId}/itemstatus/`,
       { query: { action: "data", index: 1, range: 100 } },
     );
-    return data.itemstatus ?? [];
+    return (data.statuses ?? []).map((s) => withIdName(s, "statusId", "statusName")) as unknown as SprintsStatus[];
   }
 
   async getItemTypes(projectId: string): Promise<Array<{ id: string; name: string }>> {
     const teamId = await this.ensureTeamId();
-    const data = await this.request<{ itemtype: Array<{ id: string; name: string }> }>(
+    // Response key is "projItemTypes", not "itemtype" - confirmed live. The
+    // id used here (projItemTypeId) is deliberately the project-scoped one,
+    // not the workspace-global itemTypeId also present on each record -
+    // Create/Update item's projitemtypeid field expects the former.
+    const data = await this.request<{ projItemTypes: Array<Record<string, unknown>> }>(
       `/team/${teamId}/projects/${projectId}/itemtype/`,
       { query: { action: "data", index: 1, range: 100 } },
     );
-    return data.itemtype ?? [];
+    return (data.projItemTypes ?? []).map((t) => withIdName(t, "projItemTypeId", "itemTypeName"));
   }
 
   async getPriorities(projectId: string): Promise<Array<{ id: string; name: string }>> {
     const teamId = await this.ensureTeamId();
-    const data = await this.request<{ priority: Array<{ id: string; name: string }> }>(
+    // Response key is "projPriorities", not "priority" - confirmed live.
+    // Same project-scoped-vs-global ID distinction as getItemTypes above:
+    // projPriorityId is what Create/Update item's projpriorityid expects.
+    const data = await this.request<{ projPriorities: Array<Record<string, unknown>> }>(
       `/team/${teamId}/projects/${projectId}/priority/`,
       { query: { action: "data", index: 1, range: 100 } },
     );
-    return data.priority ?? [];
+    return (data.projPriorities ?? []).map((p) => withIdName(p, "projPriorityId", "priorityName"));
+  }
+
+  /** Normalizes a raw item record (itemId/itemName/statusId/...) - see withIdName. */
+  private normalizeItem(raw: Record<string, unknown>): SprintsItem {
+    return withIdName(raw, "itemId", "itemName", "title") as unknown as SprintsItem;
   }
 
   async listItems(
@@ -191,7 +228,8 @@ export class SprintsClient {
     opts: { index?: number; range?: number; searchby?: "id" | "name"; searchvalue?: string } = {},
   ): Promise<SprintsItem[]> {
     const teamId = await this.ensureTeamId();
-    const data = await this.request<{ item: SprintsItem[] }>(
+    // Response key is "items" (plural) - not "item" - confirmed live.
+    const data = await this.request<{ items: Array<Record<string, unknown>> }>(
       `/team/${teamId}/projects/${projectId}/sprints/${sprintOrBacklogId}/item/`,
       {
         query: {
@@ -203,16 +241,20 @@ export class SprintsClient {
         },
       },
     );
-    return data.item ?? [];
+    return (data.items ?? []).map((i) => this.normalizeItem(i));
   }
 
   async getItem(projectId: string, sprintOrBacklogId: string, itemId: string): Promise<SprintsItem> {
     const teamId = await this.ensureTeamId();
-    const data = await this.request<{ item: SprintsItem }>(
+    // Even for a single item, action=details wraps the result in an
+    // "items" array of length 1 (confirmed live) - there is no bare "item".
+    const data = await this.request<{ items: Array<Record<string, unknown>> }>(
       `/team/${teamId}/projects/${projectId}/sprints/${sprintOrBacklogId}/item/${itemId}/`,
       { query: { action: "details" } },
     );
-    return data.item;
+    const item = data.items?.[0];
+    if (!item) throw new Error(`Item ${itemId} not found.`);
+    return this.normalizeItem(item);
   }
 
   async createItem(
@@ -221,11 +263,13 @@ export class SprintsClient {
     fields: Record<string, unknown>,
   ): Promise<SprintsItem> {
     const teamId = await this.ensureTeamId();
-    const data = await this.request<{ item: SprintsItem }>(
+    // The create response is just {addedItemId, statusId, itemNo, status} -
+    // confirmed live, no item payload - so fetch the full item afterward.
+    const data = await this.request<{ addedItemId: string }>(
       `/team/${teamId}/projects/${projectId}/sprints/${sprintOrBacklogId}/item/`,
       { method: "POST", body: fields },
     );
-    return data.item;
+    return this.getItem(projectId, sprintOrBacklogId, data.addedItemId);
   }
 
   async updateItem(
@@ -235,49 +279,63 @@ export class SprintsClient {
     fields: Record<string, unknown>,
   ): Promise<SprintsItem> {
     const teamId = await this.ensureTeamId();
-    const data = await this.request<{ item: SprintsItem }>(
-      `/team/${teamId}/projects/${projectId}/sprints/${sprintOrBacklogId}/item/${itemId}/`,
-      { method: "POST", body: fields },
-    );
-    return data.item;
+    // The update response just echoes back the changed fields (confirmed
+    // live), not the full item, so fetch it afterward like createItem.
+    await this.request(`/team/${teamId}/projects/${projectId}/sprints/${sprintOrBacklogId}/item/${itemId}/`, {
+      method: "POST",
+      body: fields,
+    });
+    return this.getItem(projectId, sprintOrBacklogId, itemId);
   }
 
   /** Resolves the moduleId Sprints uses for work-item comments/notes (cached per process). */
   private async getItemModuleId(): Promise<string> {
     if (this.moduleIdCache) return this.moduleIdCache;
     const teamId = await this.ensureTeamId();
-    const data = await this.request<{ modules: Array<{ id: string; name: string }> }>(
+    // Response key is "custommodules", and each record uses
+    // moduleId/moduleName (not id/name) - confirmed live, despite this
+    // being the *default* module list, not just custom ones.
+    const data = await this.request<{ custommodules: Array<{ moduleId: string; moduleName: string }> }>(
       `/team/${teamId}/settings/customization/modules/`,
       { query: { action: "data", index: 1, range: 100 } },
     );
-    const modules = data.modules ?? [];
-    const match = modules.find((m) => /^(work)?item$/i.test(m.name));
+    const modules = data.custommodules ?? [];
+    const match = modules.find((m) => /^(work)?item$/i.test(m.moduleName));
     if (!match) {
       throw new Error(
-        `Could not find an "Item" module in this workspace's module list (${modules.map((m) => m.name).join(", ")}).`,
+        `Could not find an "Item" module in this workspace's module list (${modules.map((m) => m.moduleName).join(", ")}).`,
       );
     }
-    this.moduleIdCache = match.id;
-    return match.id;
+    this.moduleIdCache = match.moduleId;
+    return match.moduleId;
+  }
+
+  /** Normalizes a raw comment/note record (noteId/notes text/...) - see withIdName. */
+  private normalizeComment(raw: Record<string, unknown>): SprintsComment {
+    return withIdName(raw, "noteId", "notes", "content") as unknown as SprintsComment;
   }
 
   async listItemComments(projectId: string, itemId: string): Promise<SprintsComment[]> {
     const teamId = await this.ensureTeamId();
     const moduleId = await this.getItemModuleId();
-    const data = await this.request<{ notes: SprintsComment[] }>(
+    // Response key is "notess" (double s - yes, that's really what Zoho
+    // returns) - confirmed live, not "notes".
+    const data = await this.request<{ notess: Array<Record<string, unknown>> }>(
       `/team/${teamId}/projects/${projectId}/modules/${moduleId}/entity/${itemId}/notes/`,
       { query: { action: "data", index: 1, range: 100 } },
     );
-    return data.notes ?? [];
+    return (data.notess ?? []).map((n) => this.normalizeComment(n));
   }
 
   async addItemComment(projectId: string, itemId: string, text: string): Promise<SprintsComment> {
     const teamId = await this.ensureTeamId();
     const moduleId = await this.getItemModuleId();
-    const data = await this.request<{ notes: SprintsComment }>(
+    const data = await this.request<{ notess: Array<Record<string, unknown>> }>(
       `/team/${teamId}/projects/${projectId}/modules/${moduleId}/entity/${itemId}/notes/`,
       { method: "POST", body: { action: "addnotes", name: text } },
     );
-    return data.notes;
+    const note = data.notess?.[0];
+    if (!note) throw new Error("Zoho did not return the newly added comment.");
+    return this.normalizeComment(note);
   }
 }
