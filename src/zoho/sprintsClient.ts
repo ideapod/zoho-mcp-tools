@@ -19,6 +19,21 @@ interface SprintsResponse {
   [key: string]: unknown;
 }
 
+/**
+ * Zoho Sprints' write endpoints expect application/x-www-form-urlencoded
+ * bodies (its docs show curl --data-urlencode, not a JSON payload) - array
+ * and object values are individually JSON-stringified within the form
+ * field (e.g. users=["123"]), everything else is sent as a plain string.
+ */
+function toFormBody(body: Record<string, unknown>): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(body)) {
+    if (value === undefined) continue;
+    params.set(key, typeof value === "string" ? value : JSON.stringify(value));
+  }
+  return params.toString();
+}
+
 export class SprintsApiError extends Error {
   constructor(
     message: string,
@@ -72,9 +87,9 @@ export class SprintsClient {
         headers: {
           Authorization: `Zoho-oauthtoken ${token}`,
           "x-convert-response": "true",
-          ...(options.body ? { "Content-Type": "application/json" } : {}),
+          ...(options.body ? { "Content-Type": "application/x-www-form-urlencoded" } : {}),
         },
-        body: options.body ? JSON.stringify(options.body) : undefined,
+        body: options.body ? toFormBody(options.body) : undefined,
       });
 
     let token = await this.tokenManager.getAccessToken();
@@ -111,7 +126,7 @@ export class SprintsClient {
 
   async getProjectDetails(projectId: string): Promise<Record<string, unknown>> {
     const teamId = await this.ensureTeamId();
-    return this.request(`/team/${teamId}/projects/${projectId}/`);
+    return this.request(`/team/${teamId}/projects/${projectId}/`, { query: { action: "details" } });
   }
 
   async getProjectBacklogId(projectId: string): Promise<string> {
@@ -124,15 +139,22 @@ export class SprintsClient {
 
   async listSprints(projectId: string): Promise<SprintsSprint[]> {
     const teamId = await this.ensureTeamId();
+    // action/index/range are mandatory query params for this endpoint (same
+    // gotcha as listProjects). type must be a JSON array of sprint-type
+    // codes (1=upcoming, 2=active, 3=completed, 4=canceled) - omitting it
+    // silently restricts results to upcoming sprints only, so pass all four
+    // to genuinely list every sprint.
     const data = await this.request<{ sprints: SprintsSprint[] }>(`/team/${teamId}/projects/${projectId}/sprints/`, {
-      query: { type: "all" },
+      query: { action: "data", index: 1, range: 100, type: JSON.stringify([1, 2, 3, 4]) },
     });
     return data.sprints ?? [];
   }
 
   async listEpics(projectId: string): Promise<SprintsEpic[]> {
     const teamId = await this.ensureTeamId();
-    const data = await this.request<{ epic: SprintsEpic[] }>(`/team/${teamId}/projects/${projectId}/epic/`);
+    const data = await this.request<{ epic: SprintsEpic[] }>(`/team/${teamId}/projects/${projectId}/epic/`, {
+      query: { action: "data", index: 1, range: 100 },
+    });
     return data.epic ?? [];
   }
 
@@ -140,6 +162,7 @@ export class SprintsClient {
     const teamId = await this.ensureTeamId();
     const data = await this.request<{ itemstatus: SprintsStatus[] }>(
       `/team/${teamId}/projects/${projectId}/itemstatus/`,
+      { query: { action: "data", index: 1, range: 100 } },
     );
     return data.itemstatus ?? [];
   }
@@ -148,6 +171,7 @@ export class SprintsClient {
     const teamId = await this.ensureTeamId();
     const data = await this.request<{ itemtype: Array<{ id: string; name: string }> }>(
       `/team/${teamId}/projects/${projectId}/itemtype/`,
+      { query: { action: "data", index: 1, range: 100 } },
     );
     return data.itemtype ?? [];
   }
@@ -156,6 +180,7 @@ export class SprintsClient {
     const teamId = await this.ensureTeamId();
     const data = await this.request<{ priority: Array<{ id: string; name: string }> }>(
       `/team/${teamId}/projects/${projectId}/priority/`,
+      { query: { action: "data", index: 1, range: 100 } },
     );
     return data.priority ?? [];
   }
@@ -185,6 +210,7 @@ export class SprintsClient {
     const teamId = await this.ensureTeamId();
     const data = await this.request<{ item: SprintsItem }>(
       `/team/${teamId}/projects/${projectId}/sprints/${sprintOrBacklogId}/item/${itemId}/`,
+      { query: { action: "details" } },
     );
     return data.item;
   }
@@ -222,6 +248,7 @@ export class SprintsClient {
     const teamId = await this.ensureTeamId();
     const data = await this.request<{ modules: Array<{ id: string; name: string }> }>(
       `/team/${teamId}/settings/customization/modules/`,
+      { query: { action: "data", index: 1, range: 100 } },
     );
     const modules = data.modules ?? [];
     const match = modules.find((m) => /^(work)?item$/i.test(m.name));
@@ -239,6 +266,7 @@ export class SprintsClient {
     const moduleId = await this.getItemModuleId();
     const data = await this.request<{ notes: SprintsComment[] }>(
       `/team/${teamId}/projects/${projectId}/modules/${moduleId}/entity/${itemId}/notes/`,
+      { query: { action: "data", index: 1, range: 100 } },
     );
     return data.notes ?? [];
   }

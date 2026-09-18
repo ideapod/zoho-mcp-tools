@@ -100,6 +100,29 @@ describe("SprintsClient", () => {
     expect(url.searchParams.get("range")).toBe("100");
   });
 
+  it("sends action/index/range and all sprint types for listSprints", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "success", sprints: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    await client.listSprints("proj-1");
+
+    const url = fetchMock.mock.calls[0]![0] as URL;
+    expect(url.searchParams.get("action")).toBe("data");
+    expect(url.searchParams.get("type")).toBe("[1,2,3,4]");
+  });
+
+  it("sends action=details for getItem and getProjectDetails", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "success", item: {} }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    await client.getItem("proj-1", "backlog-1", "item-1");
+
+    const url = fetchMock.mock.calls[0]![0] as URL;
+    expect(url.searchParams.get("action")).toBe("details");
+  });
+
   it("sends the mandatory action/index/range query params for listProjects", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "success", projects: [] }));
     vi.stubGlobal("fetch", fetchMock);
@@ -114,15 +137,18 @@ describe("SprintsClient", () => {
     expect(url.searchParams.get("range")).toBe("100");
   });
 
-  it("sends update fields as a JSON POST body", async () => {
+  it("sends update fields as a form-urlencoded POST body, matching Zoho's docs", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "success", item: { id: "1" } }));
     vi.stubGlobal("fetch", fetchMock);
 
     const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
-    await client.updateItem("proj-1", "backlog-1", "item-1", { statusid: "42" });
+    await client.updateItem("proj-1", "backlog-1", "item-1", { statusid: "42", newusers: ["1", "2"] });
 
-    const init = fetchMock.mock.calls[0]![1] as { method: string; body: string };
+    const init = fetchMock.mock.calls[0]![1] as { method: string; body: string; headers: Record<string, string> };
     expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body)).toEqual({ statusid: "42" });
+    expect(init.headers["Content-Type"]).toBe("application/x-www-form-urlencoded");
+    const params = new URLSearchParams(init.body);
+    expect(params.get("statusid")).toBe("42");
+    expect(params.get("newusers")).toBe('["1","2"]');
   });
 });
