@@ -6,6 +6,9 @@ export interface ZohoSecret {
   refreshToken: string;
   teamId?: string;
   mcpApiKey?: string;
+  /** Data-center-specific hosts, written by scripts/oauth-setup.ts. */
+  accountsBaseUrl?: string;
+  apiBaseUrl?: string;
 }
 
 let cached: ZohoSecret | undefined;
@@ -34,6 +37,8 @@ export async function loadZohoSecret(secretId: string, region: string): Promise<
     refreshToken: parsed.refreshToken,
     teamId: parsed.teamId,
     mcpApiKey: parsed.mcpApiKey,
+    accountsBaseUrl: parsed.accountsBaseUrl,
+    apiBaseUrl: parsed.apiBaseUrl,
   };
   return cached;
 }

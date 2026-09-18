@@ -72,8 +72,11 @@ proper multi-user auth if you ever expand this beyond personal use.
 - Docker (for building the Lambda container image)
 - An AWS account with credentials that can create Lambda, IAM roles, Secrets Manager secrets, and CloudWatch Logs
   (the CDK stack needs `cdk bootstrap` once per account/region)
-- A Zoho account on the `.com` data center (sprints.zoho.com, not `.eu`/`.in`/`.com.au`/etc.) - if you're on a
-  different DC, override `ZOHO_ACCOUNTS_BASE_URL`/`ZOHO_API_BASE_URL` (see `.env.example`)
+- A Zoho account on any of Zoho's data centers (`.com`, `.eu`, `.in`, `.com.au`, `.com.cn`, `.jp`, `.sa`,
+  Canada). `npm run oauth:setup` asks which one you're on and resolves the right accounts/API hosts for you -
+  check the URL when logged into Zoho Sprints in a browser if you're not sure (e.g. `sprints.zoho.com.au` means
+  you're on the Australia DC). `ZOHO_ACCOUNTS_BASE_URL`/`ZOHO_API_BASE_URL` (see `.env.example`) are only needed
+  as manual overrides.
 
 ## Run locally
 

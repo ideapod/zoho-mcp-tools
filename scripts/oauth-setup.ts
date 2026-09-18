@@ -13,12 +13,52 @@
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
+import { pathToFileURL } from "node:url";
 import {
   CreateSecretCommand,
   PutSecretValueCommand,
   ResourceNotFoundException,
   SecretsManagerClient,
 } from "@aws-sdk/client-secrets-manager";
+
+/** Data centers Zoho Sprints is hosted on (https://sprints.zoho.com/apidoc.html#MultipleDC). */
+const DATA_CENTERS: Record<string, { accountsBaseUrl: string; apiBaseUrl: string }> = {
+  com: { accountsBaseUrl: "https://accounts.zoho.com", apiBaseUrl: "https://sprintsapi.zoho.com/zsapi" },
+  eu: { accountsBaseUrl: "https://accounts.zoho.eu", apiBaseUrl: "https://sprintsapi.zoho.eu/zsapi" },
+  in: { accountsBaseUrl: "https://accounts.zoho.in", apiBaseUrl: "https://sprintsapi.zoho.in/zsapi" },
+  "com.au": { accountsBaseUrl: "https://accounts.zoho.com.au", apiBaseUrl: "https://sprintsapi.zoho.com.au/zsapi" },
+  "com.cn": { accountsBaseUrl: "https://accounts.zoho.com.cn", apiBaseUrl: "https://sprintsapi.zoho.com.cn/zsapi" },
+  jp: { accountsBaseUrl: "https://accounts.zoho.jp", apiBaseUrl: "https://sprintsapi.zoho.jp/zsapi" },
+  sa: { accountsBaseUrl: "https://accounts.zoho.sa", apiBaseUrl: "https://sprintsapi.zoho.sa/zsapi" },
+  // Canada is irregular: zohocloud.ca, not zoho.ca.
+  ca: { accountsBaseUrl: "https://accounts.zohocloud.ca", apiBaseUrl: "https://sprintsapi.zohocloud.ca/zsapi" },
+};
+
+/**
+ * Accepts whatever format someone reasonably types: a bare suffix ("com",
+ * "com.au"), a host with the zoho/accounts/sprints prefix already on it
+ * ("zoho.com.au", "accounts.zoho.eu", "sprints.zoho.in"), or a full URL.
+ */
+export function resolveDataCenter(input: string): { accountsBaseUrl: string; apiBaseUrl: string } {
+  const cleaned = input
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/$/, "")
+    .replace(/^(accounts|sprints|api)\.zoho\./, "")
+    .replace(/^zoho\./, "")
+    .replace(/\.$/, "");
+
+  const key = cleaned === "" ? "com" : cleaned === "zohocloud.ca" ? "ca" : cleaned;
+  const match = DATA_CENTERS[key];
+  if (!match) {
+    throw new Error(
+      `Unrecognized Zoho data center "${input}". Known values: ${Object.keys(DATA_CENTERS).join(", ")}. ` +
+        "Check the URL when logged into Zoho Sprints, or see https://sprints.zoho.com/apidoc.html#MultipleDC.",
+    );
+  }
+  return match;
+}
 
 const REQUIRED_SCOPES = [
   "ZohoSprints.teams.READ",
@@ -46,8 +86,12 @@ async function main() {
   console.log("  4. Set a description and duration (max 10 minutes), then generate the code.");
   console.log("  5. Copy the generated grant token/code - you'll need it below (it expires fast).\n");
 
-  const domain = (await ask("Zoho data center domain [com]: ")) || "com";
-  const accountsBaseUrl = `https://accounts.zoho.${domain}`;
+  console.log("  Check the URL when logged into Zoho Sprints in a browser to find yours, e.g.:");
+  console.log("  sprints.zoho.com -> com | sprints.zoho.com.au -> com.au | sprints.zoho.eu -> eu\n");
+  const domainInput = (await ask("Zoho data center [com]: ")) || "com";
+  const { accountsBaseUrl, apiBaseUrl } = resolveDataCenter(domainInput);
+  console.log(`Using accounts host ${accountsBaseUrl} and API host ${apiBaseUrl}.\n`);
+
   const clientId = await ask("Client ID: ");
   const clientSecret = await ask("Client Secret: ");
   const grantToken = await ask("Grant token/code (from the Self Client screen): ");
@@ -81,6 +125,8 @@ async function main() {
     clientSecret: clientSecret.trim(),
     refreshToken: body.refresh_token,
     mcpApiKey,
+    accountsBaseUrl,
+    apiBaseUrl,
   };
 
   console.log(`Generated an MCP bearer token (send it as "Authorization: Bearer ${mcpApiKey}"):\n`);
@@ -123,6 +169,7 @@ async function main() {
       `ZOHO_CLIENT_SECRET=${secret.clientSecret}`,
       `ZOHO_REFRESH_TOKEN=${secret.refreshToken}`,
       `ZOHO_ACCOUNTS_BASE_URL=${accountsBaseUrl}`,
+      `ZOHO_API_BASE_URL=${apiBaseUrl}`,
       `MCP_API_KEY=${secret.mcpApiKey}`,
     ].join("\n");
     await writeFile(".env", envContents + "\n", { mode: 0o600 });
@@ -132,7 +179,12 @@ async function main() {
   rl.close();
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+// Guard so this can be imported (e.g. by tests, for resolveDataCenter)
+// without kicking off the interactive CLI flow.
+const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isDirectRun) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

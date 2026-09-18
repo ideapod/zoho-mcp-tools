@@ -47,6 +47,14 @@ products.
   them, never put them in CDK context/outputs.
 - **Region is pinned to `ap-southeast-2`** in `infra/bin/app.ts`, deliberately ignoring the deployer's default
   AWS CLI region/profile (Zoho's API is reached over the public internet regardless of Lambda's region).
+- **Don't assume the `.com` (US) Zoho data center.** `resolveDataCenter()` in `scripts/oauth-setup.ts` maps a
+  user-supplied DC (accepting several input formats - bare suffix, `zoho.<suffix>`, a full host, Canada's
+  irregular `zohocloud.ca`) to its `accountsBaseUrl`/`apiBaseUrl`, and both get written into the Secrets Manager
+  secret alongside the credentials. `src/config.ts` resolution order is: explicit env var > value stored in the
+  secret > hardcoded `.com` default. This bit us once already - a user who was actually on `.com.au` got sent
+  `accounts.zoho.zoho.com.au` (DNS failure) because the original script only asked for a bare suffix and
+  string-concatenated it blindly. If you touch DC handling again, keep accepting loose input formats and keep
+  writing both URLs into the secret, not just `accountsBaseUrl`.
 
 ## Build quirk to know about
 
