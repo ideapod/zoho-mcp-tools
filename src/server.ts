@@ -90,6 +90,21 @@ export function createHttpServer() {
     }
 
     if (url.pathname === MCP_PATH) {
+      // Only POST (the actual JSON-RPC request/response cycle) is supported. The transport also
+      // accepts a standalone GET to open a long-lived SSE stream for server-initiated
+      // notifications, but this server builds a fresh, stateless transport per request and never
+      // sends any such notifications - accepting that GET would just hold the connection open
+      // until Lambda's hard timeout kills it, since nothing here ever closes it. A well-behaved
+      // MCP client opens that stream anyway to listen for async notifications and immediately
+      // reconnects when it drops, which turned into an unbounded loop of 30-second-long,
+      // never-productive Lambda invocations (confirmed live via CloudWatch Logs - see incident
+      // notes). Rejecting fast avoids that entirely.
+      if (req.method !== "POST") {
+        res.writeHead(405, { "Content-Type": "application/json", Allow: "POST" });
+        res.end(JSON.stringify({ error: "Method not allowed - this stateless MCP server only supports POST" }));
+        return;
+      }
+
       getContext()
         .then(({ client, mcpApiKey }) => {
           if (!isAuthorized(req, mcpApiKey)) {
