@@ -275,6 +275,77 @@ describe("SprintsClient", () => {
     expect(params.get("newusers")).toBe('["1","2"]');
   });
 
+  it("moveItemStatus uses plain updateItem when the project has no Kanban board (Scrum)", async () => {
+    const fetchMock = vi
+      .fn()
+      // getKanbanBoardId: no sprintType-7 pseudo-sprint exists.
+      .mockResolvedValueOnce(jsonResponse({ status: "success", sprints: [] }))
+      // updateItem's POST, then its getItem re-fetch.
+      .mockResolvedValueOnce(jsonResponse({ status: "success" }))
+      .mockResolvedValueOnce(jsonResponse({ status: "success", items: [{ itemId: "item-1" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    await client.moveItemStatus("proj-1", "item-1", "status-1", "sprint-1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const updateUrl = fetchMock.mock.calls[1]![0] as URL;
+    expect(updateUrl.pathname).toBe("/zsapi/team/111/projects/proj-1/sprints/sprint-1/item/item-1/");
+  });
+
+  it("moveItemStatus uses plain updateItem when the item is already on the Kanban board", async () => {
+    const fetchMock = vi
+      .fn()
+      // getKanbanBoardId finds the board.
+      .mockResolvedValueOnce(jsonResponse({ status: "success", sprints: [{ sprintId: "board-1" }] }))
+      // Lookup to find the item's real current container: its own sprintId
+      // field says it's already on the board (Get item details doesn't
+      // validate the URL's sprintId segment against the item's real
+      // location, so this lookup works regardless of the URL used).
+      .mockResolvedValueOnce(jsonResponse({ status: "success", items: [{ itemId: "item-1", sprintId: "board-1" }] }))
+      // updateItem's POST, then its getItem re-fetch.
+      .mockResolvedValueOnce(jsonResponse({ status: "success" }))
+      .mockResolvedValueOnce(jsonResponse({ status: "success", items: [{ itemId: "item-1" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    await client.moveItemStatus("proj-1", "item-1", "status-1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    const updateUrl = fetchMock.mock.calls[2]![0] as URL;
+    expect(updateUrl.pathname).toBe("/zsapi/team/111/projects/proj-1/sprints/board-1/item/item-1/");
+  });
+
+  it("moveItemStatus moves a still-backlogged item onto the board via bulkupdate/moveitem", async () => {
+    const fetchMock = vi
+      .fn()
+      // getKanbanBoardId finds the board.
+      .mockResolvedValueOnce(jsonResponse({ status: "success", sprints: [{ sprintId: "board-1" }] }))
+      // Lookup: the item's own sprintId field says it's still in the
+      // backlog, even though the lookup itself was made against the board.
+      .mockResolvedValueOnce(
+        jsonResponse({ status: "success", items: [{ itemId: "item-1", sprintId: "backlog-1" }] }),
+      )
+      // The bulkupdate/moveitem POST, then getItem re-fetch from the board.
+      .mockResolvedValueOnce(jsonResponse({ status: "success", itemIds: ["item-1"] }))
+      .mockResolvedValueOnce(jsonResponse({ status: "success", items: [{ itemId: "item-1" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    await client.moveItemStatus("proj-1", "item-1", "status-1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    const [moveUrl, moveInit] = fetchMock.mock.calls[2]! as [URL, { method: string; body: string }];
+    expect(moveUrl.pathname).toBe("/zsapi/team/111/projects/proj-1/sprints/backlog-1/bulkupdate/");
+    expect(moveUrl.searchParams.get("action")).toBe("moveitem");
+    expect(moveInit.method).toBe("POST");
+    const params = new URLSearchParams(moveInit.body);
+    expect(params.get("itemidarr")).toBe('["item-1"]');
+    expect(params.get("tosprintid")).toBe("board-1");
+    expect(params.get("statusid")).toBe("status-1");
+    expect(params.get("needlrvalidation")).toBe("true");
+  });
+
   it("normalizes tags from the zsTags shape, using zsTagId (not tagId) as the ID", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({

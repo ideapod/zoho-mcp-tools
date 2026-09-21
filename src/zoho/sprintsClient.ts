@@ -79,6 +79,7 @@ export class SprintsApiError extends Error {
  */
 export class SprintsClient {
   private moduleIdCache: string | undefined;
+  private kanbanBoardIdCache = new Map<string, string | undefined>();
 
   constructor(
     private readonly tokenManager: ZohoTokenManager,
@@ -353,6 +354,92 @@ export class SprintsClient {
       body: fields,
     });
     return this.getItem(projectId, sprintOrBacklogId, itemId);
+  }
+
+  /**
+   * Finds the pseudo-sprint ID for a project's Kanban board, or undefined
+   * if the project has no board (i.e. it's a Scrum project). None of this
+   * is documented - apidoc.html claims a Kanban project's board ID
+   * ("kanbanBoardId") comes from Get Project Details, but it's genuinely
+   * absent from that response (confirmed live, both x-convert-response
+   * converted and raw). The only way this was found at all was capturing
+   * the real request the Zoho Sprints web app fires when you drag a card:
+   * Get sprints with an undocumented sprint-type code (5 = the literal
+   * "Backlog" pseudo-sprint returned by getProjectBacklogId; 7 = "Kanban
+   * Board") reveals it. Cached per project since it never changes and
+   * moveItemStatus needs it on every Kanban status change.
+   */
+  async getKanbanBoardId(projectId: string): Promise<string | undefined> {
+    if (this.kanbanBoardIdCache.has(projectId)) return this.kanbanBoardIdCache.get(projectId);
+    const teamId = await this.ensureTeamId();
+    const data = await this.request<{ sprints?: Array<{ sprintId: string }> }>(
+      `/team/${teamId}/projects/${projectId}/sprints/`,
+      { query: { action: "data", index: 1, range: 1, type: JSON.stringify([7]) } },
+    );
+    const boardId = data.sprints?.[0]?.sprintId;
+    this.kanbanBoardIdCache.set(projectId, boardId);
+    return boardId;
+  }
+
+  /**
+   * Moves an item to a different status. For a Scrum project (no Kanban
+   * board) this is just the plain Update item endpoint, same as always.
+   * Kanban is genuinely more involved - all confirmed live, none of it
+   * documented:
+   *  - A brand-new item starts in the literal "backlog" container
+   *    (getProjectBacklogId), and Update item flatly refuses a statusid
+   *    change there: HTTP 500 {code: 7500.6, message: "Status update not
+   *    supported in backlog."}.
+   *  - The item's first status change has to go through the documented
+   *    "Move item" bulk endpoint (action=moveitem) instead, but with two
+   *    fields apidoc.html doesn't mention: statusid (the target status) and
+   *    needlrvalidation - captured from the Zoho web app's own
+   *    drag-and-drop network request. tosprintid must be the Kanban board's
+   *    ID (see getKanbanBoardId); the URL's {sprintId} segment must exactly
+   *    match the item's actual current container or Zoho rejects it (HTTP
+   *    500 {code: 7500.6, message: "Item(s) to be moved mismatch with the
+   *    current sprintId!"}); and it refuses a same-container "move"
+   *    outright (HTTP 500 {code: 7500.6, message: "Item(s) are already in
+   *    the selected/current sprint"}) - which is why further status changes
+   *    use plain Update item instead of moveitem again.
+   *  - Once an item is on the board, Update item works normally for
+   *    statusid - the backlog restriction really is specific to the literal
+   *    backlog container, not "Kanban projects" as a whole.
+   * knownContainerId is the item's current sprint/backlog ID if the caller
+   * already knows it (skips a lookup). Otherwise this fetches the item to
+   * find its real current container from the response's own sprintId field
+   * - confirmed live that Get item details doesn't actually validate the
+   * URL's {sprintId} segment against the item's real location (unlike
+   * Update item/bulkupdate, which both do), so any container ID reaches the
+   * same item and its true sprintId; a wrong-guess "does it exist here"
+   * probe would always report success regardless of where the item really
+   * is, which is exactly the bug this replaced.
+   */
+  async moveItemStatus(
+    projectId: string,
+    itemId: string,
+    statusId: string,
+    knownContainerId?: string,
+  ): Promise<SprintsItem> {
+    const boardId = await this.getKanbanBoardId(projectId);
+    if (!boardId) {
+      const containerId = knownContainerId ?? (await this.getProjectBacklogId(projectId));
+      return this.updateItem(projectId, containerId, itemId, { statusid: statusId });
+    }
+
+    const containerId = knownContainerId ?? String((await this.getItem(projectId, boardId, itemId)).sprintId);
+
+    if (containerId === boardId) {
+      return this.updateItem(projectId, boardId, itemId, { statusid: statusId });
+    }
+
+    const teamId = await this.ensureTeamId();
+    await this.request(`/team/${teamId}/projects/${projectId}/sprints/${containerId}/bulkupdate/`, {
+      method: "POST",
+      query: { action: "moveitem" },
+      body: { itemidarr: [itemId], tosprintid: boardId, statusid: statusId, needlrvalidation: true },
+    });
+    return this.getItem(projectId, boardId, itemId);
   }
 
   /** Fetches the tag IDs currently associated with an item (see apidoc.html#Gettagsassociatedwithitem). */

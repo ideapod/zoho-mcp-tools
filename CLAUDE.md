@@ -8,30 +8,27 @@ A remote MCP server, deployed as a Lambda container image, exposing Zoho Sprints
 MCP tools for the StoryTrail project. Single-user, personal integration - no multi-tenancy, no other Zoho
 products.
 
+(Speculative, not-started: [docs/multi-tenant-marketplace-strategy.md](docs/multi-tenant-marketplace-strategy.md)
+sketches what turning this into a sellable, multi-tenant product would take, and what's actually confirmed vs.
+still unknown about listing in Zoho Marketplace. Don't build toward it without the user explicitly picking it
+up - it contradicts several of the single-user decisions below.)
+
 ## Current status (2026-09-22)
 
-`create_epic` (originally added in commit `e1fa9a1`) is fixed, committed (`8fd6f51`), pushed, deployed via CI,
-and **confirmed working live through the real Lambda Function URL** - both by curling the Function URL directly
-and by calling it through an already-connected Claude Code session's existing MCP connection (no new session or
-reconnect was needed; only app logic changed, not credentials/scopes/schemas). See `git show 8fd6f51` for the
-two root causes (epic creation needs a raw JSON body, not form-urlencoded like every other write endpoint; and
-its `x-convert-response` shape is `{epics: [...]}`, not the docs' `{epicJObj, epicIds}`) and the fix to
-`toolErrorResult` that made the response body visible for debugging.
+`create_epic` (`e1fa9a1`, fixed in `8fd6f51`) and `move_item_status`'s Kanban support (see the "Kanban status
+moves" decision below) are both fixed, tested, and **confirmed working live through the real deployed Lambda**.
 
-A `delete_epic` tool now exists (`SprintsClient.deleteEpic`, DELETE `.../epic/{epicId}/`, no request body per
-apidoc.html - simple case, unlike `create_epic`). **It's implemented and unit-tested but not yet usable live**:
-calling it against the real API returns `HTTP 401 {"code":7601,"message":"Invalid oauthscope"}`, because the
-current refresh token predates the `ZohoSprints.epic.DELETE` scope this tool needs. Needs an `oauth:setup`
-re-run (the user has to generate a fresh grant code from the Zoho API console - not something a session can do
+A `delete_epic` tool exists (`SprintsClient.deleteEpic`, DELETE `.../epic/{epicId}/`, no request body) but
+**isn't usable live yet**: it returns `HTTP 401 {"code":7601,"message":"Invalid oauthscope"}` because the
+current refresh token predates the `ZohoSprints.epic.DELETE` scope it needs. Needs an `oauth:setup` re-run
+(requires the user to generate a fresh grant code from the Zoho API console - not something a session can do
 unattended) - see the scope-rotation note below for what that breaks in the meantime.
 
 **Still needs cleanup**: four test epics are sitting in the real Story Trail project (id `6488000000010001`) -
 `Test Epic (create_epic tool check)` (`6488000000011006`), `Test Epic 2 (debug)` (`6488000000011008`), `Test
 Epic 3 (final verification)` (`6488000000011010`), `Test Epic 4 (live Lambda verification)` (`6488000000012006`).
-Once `oauth:setup` has granted `epic.DELETE`, the fastest path is just calling the new `delete_epic` tool four
-times over MCP - no browser needed. (A same-session attempt to delete them by hand via the Claude in Chrome
-extension failed because the extension wasn't connected/reachable at the time - that's just an environment
-hiccup, not a reason to prefer that route going forward.)
+Once `oauth:setup` has granted `epic.DELETE`, the fastest path is calling the `delete_epic` tool directly over
+MCP - no browser needed.
 
 ## Key decisions and why (don't relitigate without new information)
 
@@ -40,12 +37,48 @@ hiccup, not a reason to prefer that route going forward.)
   API and someone explicitly asks for it.
 - **Story Trail is a pure Kanban board, not Scrum - don't build sprint CRUD tooling for it.** Confirmed live via
   `get_project_metadata` (exactly 3 statuses: To do/In progress/Done, no sprint-related config) and `list_sprints`
-  (returns `[]` - no sprints ever created). There's no backlog-vs-sprint split to move items across either -
-  `move_item_status` (already implemented) is the entire "move work through the board" story for this project.
-  `list_sprints` stays in the tool surface since it's cheap and harmless, but resist the temptation to add
-  create/start/complete/delete-sprint or move-item-to-sprint tools unless a genuinely Scrum project shows up -
-  they'd have nothing real to operate on and nobody to exercise them. (Raised and self-corrected by the user on
-  2026-09-22 after asking for exactly this, then noticing `list_sprints` came back empty.)
+  (returns `[]` - no sprints ever created, since `list_sprints`' `type` filter only asks for types 1-4, the
+  Scrum sprint states - see the next bullet for what it's missing). `list_sprints` stays in the tool surface
+  since it's cheap and harmless, but resist the temptation to add create/start/complete/delete-sprint or
+  move-item-to-sprint tools unless a genuinely Scrum project shows up - they'd have nothing real to operate on
+  and nobody to exercise them. (Raised and self-corrected by the user on 2026-09-22 after asking for exactly
+  this, then noticing `list_sprints` came back empty.)
+- **Kanban status moves (`move_item_status`) are genuinely more involved than a plain field update, and none of
+  it is documented.** All of the following was confirmed live on 2026-09-22 - most of it only by capturing the
+  real network request the Zoho Sprints web app itself fires when you drag a card (apidoc.html has no
+  "move status" or "Kanban board" endpoint at all):
+  - A brand-new item starts in the literal "backlog" pseudo-sprint (`getProjectBacklogId`,
+    `sprintType: 5`, name `"Backlog"`). The plain `Update item` endpoint flatly refuses a `statusid`
+    change there: `HTTP 500 {"code":7500.6,"message":"Status update not supported in backlog."}` -
+    even though apidoc.html lists `statusid` as a normal, unrestricted `Update item` parameter.
+  - Every Kanban project has a second, *also entirely undocumented* pseudo-sprint - a "Kanban Board"
+    (`sprintType: 7`). apidoc.html's "Get items" section claims this ID ("`kanbanBoardId`") comes from
+    `Get Project Details` - it doesn't; that field is genuinely absent from that response (checked both
+    `x-convert-response`-converted and raw). The only way to find it is `Get sprints` with the undocumented
+    `type=[7]` filter (now wrapped in `SprintsClient.getKanbanBoardId`, cached per project since it never
+    changes).
+  - An item's first status change has to move it from the backlog onto that board, via the documented "Move
+    item" bulk endpoint (`action=moveitem`) - but with two fields apidoc.html doesn't mention: `statusid`
+    (the target status) and `needlrvalidation` (`true`), both captured from the real drag-and-drop request.
+    `tosprintid` must be the Kanban board ID; the URL's `{sprintId}` segment must exactly match the item's
+    *actual current* container or Zoho rejects it (`HTTP 500 {"code":7500.6,"message":"Item(s) to be moved
+    mismatch with the current sprintId!"}`); and it refuses a same-container "move" outright (`HTTP 500
+    {"code":7500.6,"message":"Item(s) are already in the selected/current sprint"}`).
+  - Once an item is on the board, further status changes go through the plain `Update item` endpoint again,
+    normally - the backlog restriction really is specific to the literal backlog container, not "Kanban
+    projects" as a whole.
+  - To find an item's *actual* current container without the caller having to track it: `Get item details`
+    does **not** validate its URL's `{sprintId}` segment against the item's real location (unlike `Update
+    item`/`bulkupdate`, which both do) - it just returns the item's true data regardless of which container ID
+    you queried with, including its real `sprintId` field. `SprintsClient.moveItemStatus` uses exactly this: one
+    `getItem` call against the board ID, then reads `sprintId` off the response to decide whether to call plain
+    `updateItem` or the `bulkupdate`/`moveitem` dance. (An earlier version of this tried a try/catch "does
+    `getItem` succeed against the board" existence probe instead - don't do that, it always "succeeds"
+    regardless of where the item actually is, since `getItem` doesn't check the container either way.)
+  - All of this is encapsulated in `SprintsClient.moveItemStatus`; the `move_item_status` tool in
+    `src/mcp/tools/backlog.ts` just delegates to it. If you ever touch this again, re-read that method's doc
+    comment before changing anything - the ordering (bulkupdate for backlog, plain update once on the board) and
+    the "don't re-validate location with getItem-as-probe" note both matter.
 - **Built from scratch, not forked from an existing OSS Zoho Sprints MCP server.** Several exist on GitHub
   (e.g. `dineshkanin/zoho-sprints-mcp`) but are unaudited third-party code that would hold real OAuth credentials
   to production data. This repo's tool surface is intentionally smaller (10 tools vs. 100+) and fully owned/auditable.

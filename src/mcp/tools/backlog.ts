@@ -254,10 +254,9 @@ export function registerBacklogTools(server: McpServer, client: SprintsClient): 
     },
     async ({ projectId, itemId, status, sprintId }) => {
       try {
-        const listId = await resolveSprintOrBacklogId(client, projectId, sprintId);
         const statuses = await client.getItemStatuses(projectId);
         const statusId = resolveEntityId(statuses, status, "statuses");
-        const item = await client.updateItem(projectId, listId, itemId, { statusid: statusId });
+        const item = await client.moveItemStatus(projectId, itemId, statusId, sprintId);
         return toolTextResult(item);
       } catch (error) {
         return toolErrorResult(error);

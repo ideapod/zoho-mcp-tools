@@ -41,6 +41,7 @@ function fakeClient(overrides: Partial<Record<keyof SprintsClient, unknown>> = {
       id,
       ...fields,
     })),
+    moveItemStatus: vi.fn(async (_p: string, id: string, statusId: string) => ({ id, statusid: statusId })),
     createItem: vi.fn(async (_p: string, _s: string, fields: Record<string, unknown>) => ({
       id: "new-1",
       ...fields,
@@ -62,7 +63,7 @@ describe("backlog tools", () => {
     expect(items[0].id).toBe("2");
   });
 
-  it("move_item_status resolves a status name to an ID and calls updateItem", async () => {
+  it("move_item_status resolves a status name to an ID and delegates to moveItemStatus", async () => {
     const server = fakeServer();
     const client = fakeClient();
     registerBacklogTools(server as never, client);
@@ -73,7 +74,7 @@ describe("backlog tools", () => {
       status: "Done",
     });
 
-    expect(client.updateItem).toHaveBeenCalledWith("proj-1", "backlog-1", "1", { statusid: "s2" });
+    expect(client.moveItemStatus).toHaveBeenCalledWith("proj-1", "1", "s2", undefined);
     expect(JSON.parse(result.content[0]!.text)).toMatchObject({ id: "1", statusid: "s2" });
   });
 
