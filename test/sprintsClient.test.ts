@@ -196,10 +196,12 @@ describe("SprintsClient", () => {
     expect(epics[0]).toMatchObject({ id: "e-1", title: "Launch" });
   });
 
-  it("creates an epic by posting fields then re-fetching it via listEpics", async () => {
+  it("creates an epic by posting a JSON body then re-fetching it via listEpics", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse({ status: "success", epicIds: ["e-1"] }))
+      .mockResolvedValueOnce(
+        jsonResponse({ status: "success", epics: [{ epicId: "e-1", epicName: "Launch" }] }),
+      )
       .mockResolvedValueOnce(
         jsonResponse({ status: "success", epics: [{ epicId: "e-1", epicName: "Launch" }] }),
       );
@@ -210,12 +212,11 @@ describe("SprintsClient", () => {
 
     expect(epic).toMatchObject({ id: "e-1", title: "Launch" });
 
-    const [createUrl, createInit] = fetchMock.mock.calls[0]! as [URL, { method: string; body: string }];
+    const [createUrl, createInit] = fetchMock.mock.calls[0]! as [URL, { method: string; headers: Record<string, string>; body: string }];
     expect(createUrl.pathname).toBe("/zsapi/team/111/projects/proj-1/epic/");
     expect(createInit.method).toBe("POST");
-    const params = new URLSearchParams(createInit.body);
-    expect(params.get("name")).toBe("Launch");
-    expect(params.get("owner")).toBe("u-1");
+    expect(createInit.headers["Content-Type"]).toBe("application/json");
+    expect(JSON.parse(createInit.body)).toMatchObject({ name: "Launch", owner: "u-1" });
   });
 
   it("throws when epic creation doesn't return an ID to re-fetch", async () => {

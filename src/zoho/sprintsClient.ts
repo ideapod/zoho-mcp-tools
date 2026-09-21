@@ -13,6 +13,13 @@ interface RequestOptions {
   method?: "GET" | "POST" | "DELETE";
   query?: Record<string, string | number | boolean | undefined>;
   body?: Record<string, unknown>;
+  /**
+   * Most write endpoints want application/x-www-form-urlencoded (confirmed
+   * live for items/statuses). Epic creation is the odd one out: its own
+   * apidoc example sends a raw JSON body, and confirmed live too - form-
+   * encoding it gets back {code: 7600, message: "Given JSON is invalid"}.
+   */
+  bodyFormat?: "form" | "json";
 }
 
 interface SprintsResponse {
@@ -101,15 +108,19 @@ export class SprintsClient {
       if (value !== undefined) url.searchParams.set(key, String(value));
     }
 
+    const isJsonBody = options.bodyFormat === "json";
+
     const doFetch = async (token: string) => {
       const res = await fetch(url, {
         method: options.method ?? "GET",
         headers: {
           Authorization: `Zoho-oauthtoken ${token}`,
           "x-convert-response": "true",
-          ...(options.body ? { "Content-Type": "application/x-www-form-urlencoded" } : {}),
+          ...(options.body
+            ? { "Content-Type": isJsonBody ? "application/json" : "application/x-www-form-urlencoded" }
+            : {}),
         },
-        body: options.body ? toFormBody(options.body) : undefined,
+        body: options.body ? (isJsonBody ? JSON.stringify(options.body) : toFormBody(options.body)) : undefined,
       });
       const text = await res.text();
       const data = text ? (JSON.parse(text) as T & { status?: string; code?: number }) : ({} as T);
@@ -195,16 +206,16 @@ export class SprintsClient {
 
   async createEpic(projectId: string, fields: Record<string, unknown>): Promise<SprintsEpic> {
     const teamId = await this.ensureTeamId();
-    // Docs show the raw/unconverted response as {epicJObj, epicIds, status} -
-    // like listEpics, this hasn't been directly verified live with
-    // x-convert-response, so accept either an epicIds array (as documented)
-    // or a converted addedEpicId, then re-fetch the full record via
-    // listEpics the same way createItem re-fetches via getItem.
-    const data = await this.request<{ addedEpicId?: string; epicIds?: string[] }>(
+    // Docs show the raw/unconverted response as {epicJObj, epicIds, status},
+    // and docs' example body is a raw JSON payload rather than the
+    // form-urlencoded body every other write endpoint wants - both
+    // confirmed live. With x-convert-response, the actual response reuses
+    // listEpics' shape: {epics: [<full epic, including epicId>], ...}.
+    const data = await this.request<{ epics?: Array<Record<string, unknown>> }>(
       `/team/${teamId}/projects/${projectId}/epic/`,
-      { method: "POST", body: fields },
+      { method: "POST", body: fields, bodyFormat: "json" },
     );
-    const epicId = data.addedEpicId ?? data.epicIds?.[0];
+    const epicId = data.epics?.[0]?.epicId;
     if (!epicId) {
       throw new Error("Zoho did not return the newly created epic's ID.");
     }

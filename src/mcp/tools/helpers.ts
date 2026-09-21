@@ -1,3 +1,5 @@
+import { SprintsApiError } from "../../zoho/sprintsClient.js";
+
 export interface NamedEntity {
   id: string;
   name: string;
@@ -35,6 +37,10 @@ export function toolErrorResult(error: unknown): {
   content: Array<{ type: "text"; text: string }>;
   isError: true;
 } {
+  if (error instanceof SprintsApiError) {
+    const body = typeof error.body === "string" ? error.body : JSON.stringify(error.body);
+    return { content: [{ type: "text", text: `${error.message}: ${body}` }], isError: true };
+  }
   const message = error instanceof Error ? error.message : String(error);
   return { content: [{ type: "text", text: message }], isError: true };
 }

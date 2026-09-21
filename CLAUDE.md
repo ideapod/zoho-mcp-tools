@@ -8,6 +8,55 @@ A remote MCP server, deployed as a Lambda container image, exposing Zoho Sprints
 MCP tools for the StoryTrail project. Single-user, personal integration - no multi-tenancy, no other Zoho
 products.
 
+## Current status (2026-09-22, overnight session)
+
+`create_epic` (commit `e1fa9a1`) was tried live and found genuinely broken - **fixed and verified locally
+against the real Zoho API**, but **not yet committed, not yet deployed**. Full picture for pickup tomorrow:
+
+- The `mcpApiKey` rotation issue mentioned in the old version of this note is a red herring for this bug - the
+  MCP connection itself worked fine (that session's `Authorization` header was already current), so it's not
+  blocking anything. Leaving this line here only so nobody goes looking for a 401 that isn't happening.
+- **Root cause found**: `create_epic` called Zoho's `POST .../epic/` with a form-urlencoded body, like every
+  other write endpoint. Confirmed live that this specific endpoint is the odd one out - it wants a raw JSON
+  body instead (matches what its apidoc.html example actually shows: `--data '{name: ..., owner: ...}'`, unlike
+  e.g. `Create item status`'s `--data-urlencode` example). Sending form-encoded got back HTTP 400
+  `{"code":7600,"message":"Given JSON is invalid"}` - Zoho was trying to JSON-parse a form body.
+- **Second bug found once the first was fixed**: with `x-convert-response: true`, the create-epic response is
+  *not* the docs' raw `{epicJObj, epicIds, status}` shape - it's `{epics: [<full epic, with epicId>], ...}`,
+  i.e. the same shape `listEpics` already returns. The code was looking for `addedEpicId`/`epicIds`, found
+  neither, and threw "Zoho did not return the newly created epic's ID" even after the underlying POST
+  succeeded.
+- **Fix applied** (uncommitted, in the working tree): `src/zoho/sprintsClient.ts` gained a `bodyFormat: "json"`
+  option on `request()` (default stays `"form"` - every other endpoint is confirmed to need form-encoding, don't
+  change those), used by `createEpic`; `createEpic`'s response parsing now reads `data.epics?.[0]?.epicId`.
+  `src/mcp/tools/helpers.ts`'s `toolErrorResult` was also fixed to include the Zoho response body on
+  `SprintsApiError` (it previously discarded `error.body` and showed only the bare HTTP status, which is what
+  made this take three rounds of local testing instead of one - worth keeping regardless of this bug).
+  `test/sprintsClient.test.ts`'s epic-creation test was updated to match the real JSON-body/`epics`-array shape.
+- **Verified**: `npm run lint && npm run typecheck && npm test` all pass (60/60). Also ran the *actual* fix
+  against the real live Zoho API three times, by building and running `node dist/src/local.js` locally with
+  `.env`'s real credentials (not mocks) and calling `create_epic`/`list_epics` over HTTP - not just unit tests.
+- **Left behind in the real Story Trail project (id `6488000000010001`) - needs a decision**: three test epics
+  were created while debugging this, named `Test Epic (create_epic tool check)` (id `6488000000011006`),
+  `Test Epic 2 (debug)` (id `6488000000011008`), and `Test Epic 3 (final verification)` (id `6488000000011010`).
+  There's no `delete_epic` tool in this repo yet (epics are in-scope per the "Working in this repo" section
+  below, so adding one would be reasonable, but that needs a new `ZohoSprints.epic.DELETE` scope - least-
+  privilege policy says don't add a scope speculatively, and re-running `oauth:setup` to add it rotates
+  `mcpApiKey` and breaks every already-connected MCP client's cached header (see the scope note further down) -
+  too disruptive to do unattended overnight. Left this decision for the user: delete the three test epics by
+  hand in the Zoho Sprints UI, or ask for a `delete_epic` tool to be added properly (with the scope change done
+  deliberately, session-by-session header updates in hand).
+- **Not done - needs the user**: (1) review the diff and commit it if it looks right (deliberately not
+  committed unattended - see git safety rules), (2) decide whether/how to redeploy to the live Lambda (`npm run
+  cdk -- deploy` or push to `main` for CI to do it - also deliberately not done unattended, per the "risky
+  action" guidance: it's a production deploy of a personal-but-real service), (3) delete or keep the three test
+  epics above, (4) once deployed, do one more live `create_epic` call through the actual deployed Lambda (not
+  just the local server) to close the loop, since the CLAUDE.md deploy note says local dev/CDK-adjacent changes
+  should be checked for real before calling something done - this one is just app logic, not infra, so the risk
+  is lower, but it's still the last untested hop.
+- Remove this whole section once `create_epic` is confirmed working through the real deployed Lambda and the
+  test epics are dealt with.
+
 ## Key decisions and why (don't relitigate without new information)
 
 - **Zoho Wiki is out of scope.** It has no supported REST API (confirmed: `apihelp.wiki.zoho.com` returns
@@ -77,6 +126,17 @@ products.
   `accounts.zoho.zoho.com.au` (DNS failure) because the original script only asked for a bare suffix and
   string-concatenated it blindly. If you touch DC handling again, keep accepting loose input formats and keep
   writing both URLs into the secret, not just `accountsBaseUrl`.
+- **`scripts/oauth-setup.ts` generates a brand-new random `mcpApiKey` every time it's run**
+  (`randomUUID() + randomUUID()`, not read back from the existing secret) and overwrites whatever was there.
+  Re-running `oauth:setup` for any reason (rotating DC settings, redoing the OAuth grant, etc.) silently
+  invalidates every already-configured MCP client's `Authorization: Bearer <token>` header, since it no longer
+  matches the secret. This bit us on 2026-09-22: an `oauth:setup` re-run rotated the secret (confirmed via
+  `aws secretsmanager describe-secret --secret-id zoho-sprints-mcp/zoho-credentials --query LastChangedDate`),
+  and a Claude Code session's cached header in `~/.claude.json`
+  (`mcpServers.zoho-sprints.headers.Authorization`) started failing with 401s that looked like a server-side
+  auth bug. After any `oauth:setup` run, update every MCP client's Authorization header to match the new
+  `MCP_API_KEY` written to local `.env` - and note a client only picks up a `~/.claude.json` edit on a brand-new
+  session, not a retry inside one that's already connected.
 
 ## Build quirk to know about
 
