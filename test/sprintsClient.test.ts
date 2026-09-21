@@ -196,6 +196,38 @@ describe("SprintsClient", () => {
     expect(epics[0]).toMatchObject({ id: "e-1", title: "Launch" });
   });
 
+  it("creates an epic by posting fields then re-fetching it via listEpics", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ status: "success", epicIds: ["e-1"] }))
+      .mockResolvedValueOnce(
+        jsonResponse({ status: "success", epics: [{ epicId: "e-1", epicName: "Launch" }] }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    const epic = await client.createEpic("proj-1", { name: "Launch", owner: "u-1" });
+
+    expect(epic).toMatchObject({ id: "e-1", title: "Launch" });
+
+    const [createUrl, createInit] = fetchMock.mock.calls[0]! as [URL, { method: string; body: string }];
+    expect(createUrl.pathname).toBe("/zsapi/team/111/projects/proj-1/epic/");
+    expect(createInit.method).toBe("POST");
+    const params = new URLSearchParams(createInit.body);
+    expect(params.get("name")).toBe("Launch");
+    expect(params.get("owner")).toBe("u-1");
+  });
+
+  it("throws when epic creation doesn't return an ID to re-fetch", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "success" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    await expect(client.createEpic("proj-1", { name: "Launch", owner: "u-1" })).rejects.toThrow(
+      /did not return the newly created epic/,
+    );
+  });
+
   it("sends the mandatory action/index/range query params for listProjects", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "success", projects: [] }));
     vi.stubGlobal("fetch", fetchMock);

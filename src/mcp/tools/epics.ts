@@ -22,4 +22,50 @@ export function registerEpicTools(server: McpServer, client: SprintsClient): voi
       }
     },
   );
+
+  server.registerTool(
+    "create_epic",
+    {
+      title: "Create an epic",
+      description: "Creates a new epic in a project, for grouping related backlog items.",
+      inputSchema: {
+        projectId: z.string().describe("Zoho Sprints project ID (see list_projects)"),
+        name: z.string().describe("Epic name"),
+        description: z.string().optional(),
+        owner: z
+          .string()
+          .optional()
+          .describe(
+            "Zoho user ID to set as the epic's owner. Defaults to the project owner - this is a single-user " +
+              "integration, so that's normally the only sensible value.",
+          ),
+        color: z.string().optional().describe("Hex color code for the epic, e.g. '#3CB371'"),
+      },
+    },
+    async ({ projectId, name, description, owner, color }) => {
+      try {
+        const fields: Record<string, unknown> = { name };
+        if (description) fields.desc = description;
+        if (color) fields.color = color;
+
+        if (owner) {
+          fields.owner = owner;
+        } else {
+          const projects = (await client.listProjects()) as Array<Record<string, unknown>>;
+          const project = projects.find((p) => String(p.projectId) === projectId);
+          if (!project?.owner) {
+            throw new Error(
+              `Could not determine an owner for project ${projectId} - pass the "owner" argument with a Zoho user ID.`,
+            );
+          }
+          fields.owner = project.owner;
+        }
+
+        const epic = await client.createEpic(projectId, fields);
+        return toolTextResult(epic);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+  );
 }

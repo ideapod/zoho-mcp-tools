@@ -193,6 +193,29 @@ export class SprintsClient {
     return (data.epics ?? []).map((e) => withIdName(e, "epicId", "epicName", "title")) as unknown as SprintsEpic[];
   }
 
+  async createEpic(projectId: string, fields: Record<string, unknown>): Promise<SprintsEpic> {
+    const teamId = await this.ensureTeamId();
+    // Docs show the raw/unconverted response as {epicJObj, epicIds, status} -
+    // like listEpics, this hasn't been directly verified live with
+    // x-convert-response, so accept either an epicIds array (as documented)
+    // or a converted addedEpicId, then re-fetch the full record via
+    // listEpics the same way createItem re-fetches via getItem.
+    const data = await this.request<{ addedEpicId?: string; epicIds?: string[] }>(
+      `/team/${teamId}/projects/${projectId}/epic/`,
+      { method: "POST", body: fields },
+    );
+    const epicId = data.addedEpicId ?? data.epicIds?.[0];
+    if (!epicId) {
+      throw new Error("Zoho did not return the newly created epic's ID.");
+    }
+    const epics = await this.listEpics(projectId);
+    const epic = epics.find((e) => e.id === epicId);
+    if (!epic) {
+      throw new Error(`Epic ${epicId} was created but could not be fetched back.`);
+    }
+    return epic;
+  }
+
   async getItemStatuses(projectId: string): Promise<SprintsStatus[]> {
     const teamId = await this.ensureTeamId();
     // Response key is "statuses", not "itemstatus" - confirmed live.
