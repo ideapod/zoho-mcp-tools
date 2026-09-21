@@ -8,60 +8,44 @@ A remote MCP server, deployed as a Lambda container image, exposing Zoho Sprints
 MCP tools for the StoryTrail project. Single-user, personal integration - no multi-tenancy, no other Zoho
 products.
 
-## Current status (2026-09-22, overnight session)
+## Current status (2026-09-22)
 
-`create_epic` (commit `e1fa9a1`) was tried live and found genuinely broken - **fixed and verified locally
-against the real Zoho API**, but **not yet committed, not yet deployed**. Full picture for pickup tomorrow:
+`create_epic` (originally added in commit `e1fa9a1`) is fixed, committed (`8fd6f51`), pushed, deployed via CI,
+and **confirmed working live through the real Lambda Function URL** - both by curling the Function URL directly
+and by calling it through an already-connected Claude Code session's existing MCP connection (no new session or
+reconnect was needed; only app logic changed, not credentials/scopes/schemas). See `git show 8fd6f51` for the
+two root causes (epic creation needs a raw JSON body, not form-urlencoded like every other write endpoint; and
+its `x-convert-response` shape is `{epics: [...]}`, not the docs' `{epicJObj, epicIds}`) and the fix to
+`toolErrorResult` that made the response body visible for debugging.
 
-- The `mcpApiKey` rotation issue mentioned in the old version of this note is a red herring for this bug - the
-  MCP connection itself worked fine (that session's `Authorization` header was already current), so it's not
-  blocking anything. Leaving this line here only so nobody goes looking for a 401 that isn't happening.
-- **Root cause found**: `create_epic` called Zoho's `POST .../epic/` with a form-urlencoded body, like every
-  other write endpoint. Confirmed live that this specific endpoint is the odd one out - it wants a raw JSON
-  body instead (matches what its apidoc.html example actually shows: `--data '{name: ..., owner: ...}'`, unlike
-  e.g. `Create item status`'s `--data-urlencode` example). Sending form-encoded got back HTTP 400
-  `{"code":7600,"message":"Given JSON is invalid"}` - Zoho was trying to JSON-parse a form body.
-- **Second bug found once the first was fixed**: with `x-convert-response: true`, the create-epic response is
-  *not* the docs' raw `{epicJObj, epicIds, status}` shape - it's `{epics: [<full epic, with epicId>], ...}`,
-  i.e. the same shape `listEpics` already returns. The code was looking for `addedEpicId`/`epicIds`, found
-  neither, and threw "Zoho did not return the newly created epic's ID" even after the underlying POST
-  succeeded.
-- **Fix applied** (uncommitted, in the working tree): `src/zoho/sprintsClient.ts` gained a `bodyFormat: "json"`
-  option on `request()` (default stays `"form"` - every other endpoint is confirmed to need form-encoding, don't
-  change those), used by `createEpic`; `createEpic`'s response parsing now reads `data.epics?.[0]?.epicId`.
-  `src/mcp/tools/helpers.ts`'s `toolErrorResult` was also fixed to include the Zoho response body on
-  `SprintsApiError` (it previously discarded `error.body` and showed only the bare HTTP status, which is what
-  made this take three rounds of local testing instead of one - worth keeping regardless of this bug).
-  `test/sprintsClient.test.ts`'s epic-creation test was updated to match the real JSON-body/`epics`-array shape.
-- **Verified**: `npm run lint && npm run typecheck && npm test` all pass (60/60). Also ran the *actual* fix
-  against the real live Zoho API three times, by building and running `node dist/src/local.js` locally with
-  `.env`'s real credentials (not mocks) and calling `create_epic`/`list_epics` over HTTP - not just unit tests.
-- **Left behind in the real Story Trail project (id `6488000000010001`) - needs a decision**: three test epics
-  were created while debugging this, named `Test Epic (create_epic tool check)` (id `6488000000011006`),
-  `Test Epic 2 (debug)` (id `6488000000011008`), and `Test Epic 3 (final verification)` (id `6488000000011010`).
-  There's no `delete_epic` tool in this repo yet (epics are in-scope per the "Working in this repo" section
-  below, so adding one would be reasonable, but that needs a new `ZohoSprints.epic.DELETE` scope - least-
-  privilege policy says don't add a scope speculatively, and re-running `oauth:setup` to add it rotates
-  `mcpApiKey` and breaks every already-connected MCP client's cached header (see the scope note further down) -
-  too disruptive to do unattended overnight. Left this decision for the user: delete the three test epics by
-  hand in the Zoho Sprints UI, or ask for a `delete_epic` tool to be added properly (with the scope change done
-  deliberately, session-by-session header updates in hand).
-- **Not done - needs the user**: (1) review the diff and commit it if it looks right (deliberately not
-  committed unattended - see git safety rules), (2) decide whether/how to redeploy to the live Lambda (`npm run
-  cdk -- deploy` or push to `main` for CI to do it - also deliberately not done unattended, per the "risky
-  action" guidance: it's a production deploy of a personal-but-real service), (3) delete or keep the three test
-  epics above, (4) once deployed, do one more live `create_epic` call through the actual deployed Lambda (not
-  just the local server) to close the loop, since the CLAUDE.md deploy note says local dev/CDK-adjacent changes
-  should be checked for real before calling something done - this one is just app logic, not infra, so the risk
-  is lower, but it's still the last untested hop.
-- Remove this whole section once `create_epic` is confirmed working through the real deployed Lambda and the
-  test epics are dealt with.
+A `delete_epic` tool now exists (`SprintsClient.deleteEpic`, DELETE `.../epic/{epicId}/`, no request body per
+apidoc.html - simple case, unlike `create_epic`). **It's implemented and unit-tested but not yet usable live**:
+calling it against the real API returns `HTTP 401 {"code":7601,"message":"Invalid oauthscope"}`, because the
+current refresh token predates the `ZohoSprints.epic.DELETE` scope this tool needs. Needs an `oauth:setup`
+re-run (the user has to generate a fresh grant code from the Zoho API console - not something a session can do
+unattended) - see the scope-rotation note below for what that breaks in the meantime.
+
+**Still needs cleanup**: four test epics are sitting in the real Story Trail project (id `6488000000010001`) -
+`Test Epic (create_epic tool check)` (`6488000000011006`), `Test Epic 2 (debug)` (`6488000000011008`), `Test
+Epic 3 (final verification)` (`6488000000011010`), `Test Epic 4 (live Lambda verification)` (`6488000000012006`).
+Once `oauth:setup` has granted `epic.DELETE`, the fastest path is just calling the new `delete_epic` tool four
+times over MCP - no browser needed. (A same-session attempt to delete them by hand via the Claude in Chrome
+extension failed because the extension wasn't connected/reachable at the time - that's just an environment
+hiccup, not a reason to prefer that route going forward.)
 
 ## Key decisions and why (don't relitigate without new information)
 
 - **Zoho Wiki is out of scope.** It has no supported REST API (confirmed: `apihelp.wiki.zoho.com` returns
   "Workspace not found", no Wiki entry in Zoho's API directory). Don't add Wiki tools unless Zoho ships a real
   API and someone explicitly asks for it.
+- **Story Trail is a pure Kanban board, not Scrum - don't build sprint CRUD tooling for it.** Confirmed live via
+  `get_project_metadata` (exactly 3 statuses: To do/In progress/Done, no sprint-related config) and `list_sprints`
+  (returns `[]` - no sprints ever created). There's no backlog-vs-sprint split to move items across either -
+  `move_item_status` (already implemented) is the entire "move work through the board" story for this project.
+  `list_sprints` stays in the tool surface since it's cheap and harmless, but resist the temptation to add
+  create/start/complete/delete-sprint or move-item-to-sprint tools unless a genuinely Scrum project shows up -
+  they'd have nothing real to operate on and nobody to exercise them. (Raised and self-corrected by the user on
+  2026-09-22 after asking for exactly this, then noticing `list_sprints` came back empty.)
 - **Built from scratch, not forked from an existing OSS Zoho Sprints MCP server.** Several exist on GitHub
   (e.g. `dineshkanin/zoho-sprints-mcp`) but are unaudited third-party code that would hold real OAuth credentials
   to production data. This repo's tool surface is intentionally smaller (10 tools vs. 100+) and fully owned/auditable.

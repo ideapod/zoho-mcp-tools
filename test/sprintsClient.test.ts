@@ -229,6 +229,19 @@ describe("SprintsClient", () => {
     );
   });
 
+  it("sends a DELETE with no body for deleteEpic", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "success" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    await client.deleteEpic("proj-1", "e-1");
+
+    const [deleteUrl, deleteInit] = fetchMock.mock.calls[0]! as [URL, { method: string; body?: string }];
+    expect(deleteUrl.pathname).toBe("/zsapi/team/111/projects/proj-1/epic/e-1/");
+    expect(deleteInit.method).toBe("DELETE");
+    expect(deleteInit.body).toBeUndefined();
+  });
+
   it("sends the mandatory action/index/range query params for listProjects", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "success", projects: [] }));
     vi.stubGlobal("fetch", fetchMock);

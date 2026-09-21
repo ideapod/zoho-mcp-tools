@@ -66,6 +66,7 @@ const REQUIRED_SCOPES = [
   "ZohoSprints.sprints.READ",
   "ZohoSprints.epic.READ",
   "ZohoSprints.epic.CREATE",
+  "ZohoSprints.epic.DELETE",
   "ZohoSprints.items.READ",
   "ZohoSprints.items.CREATE",
   "ZohoSprints.items.UPDATE",

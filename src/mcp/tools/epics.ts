@@ -68,4 +68,24 @@ export function registerEpicTools(server: McpServer, client: SprintsClient): voi
       }
     },
   );
+
+  server.registerTool(
+    "delete_epic",
+    {
+      title: "Delete an epic",
+      description: "Deletes an epic from a project. This does not delete the items associated with it.",
+      inputSchema: {
+        projectId: z.string().describe("Zoho Sprints project ID (see list_projects)"),
+        epicId: z.string().describe("Epic ID to delete (see list_epics)"),
+      },
+    },
+    async ({ projectId, epicId }) => {
+      try {
+        await client.deleteEpic(projectId, epicId);
+        return toolTextResult({ deleted: epicId });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+  );
 }

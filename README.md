@@ -19,6 +19,7 @@ notes/docs store later, Zoho WorkDrive has a confirmed, active REST API and woul
 | `list_sprints` | List sprints in a project |
 | `list_epics` | List epics in a project |
 | `create_epic` | Create an epic in a project |
+| `delete_epic` | Delete an epic from a project |
 | `list_backlog_items` | List/filter backlog or sprint items by status, epic, priority, or text search |
 | `get_item` | Full item detail including comments |
 | `create_item` | Create a backlog/sprint item |

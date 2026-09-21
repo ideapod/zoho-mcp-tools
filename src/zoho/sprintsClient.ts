@@ -227,6 +227,12 @@ export class SprintsClient {
     return epic;
   }
 
+  async deleteEpic(projectId: string, epicId: string): Promise<void> {
+    const teamId = await this.ensureTeamId();
+    // Response is just {status: "success"} - confirmed live, nothing to return.
+    await this.request(`/team/${teamId}/projects/${projectId}/epic/${epicId}/`, { method: "DELETE" });
+  }
+
   async getItemStatuses(projectId: string): Promise<SprintsStatus[]> {
     const teamId = await this.ensureTeamId();
     // Response key is "statuses", not "itemstatus" - confirmed live.
