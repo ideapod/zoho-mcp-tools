@@ -39,6 +39,28 @@ products.
 - **MCP transport is stateless** (`sessionIdGenerator: undefined`, fresh `McpServer`/transport per request). This
   is required for a serverless deployment - don't switch to stateful sessions without also solving where session
   state would live across Lambda invocations.
+- **`/mcp` only accepts POST** - `src/server.ts` rejects GET/DELETE with an immediate 405. The MCP SDK's
+  streamable-HTTP transport also supports a standalone GET that opens a long-lived SSE stream for
+  server-initiated notifications, closed only when the app calls `transport.closeStandaloneSSEStream()` on that
+  same transport instance later. Because this server builds a fresh, stateless transport per request and never
+  keeps a reference to it afterward, nothing can ever close that stream - accepting a GET would leave the
+  connection open until Lambda's own timeout kills it. This actually happened: on 2026-09-20 a well-behaved MCP
+  client opened that stream (to listen for notifications this server never sends), it hung for the full 30s,
+  the client immediately reopened it on disconnect, and that loop ran continuously - confirmed live via
+  CloudWatch Logs (tens of thousands of invocations, hundreds of thousands of the 400k monthly free-tier
+  Lambda-GB-second limit by the time it was caught, which is what triggered an AWS billing alert). Don't remove
+  the POST-only check without first solving how a per-request transport would ever close a stream it can no
+  longer reach. See the README's "Checking Lambda usage/cost" section for how to check this isn't recurring -
+  CloudWatch Logs Insights for real-time health, Cost Explorer/`aws freetier get-free-tier-usage` for billing
+  (which lags up to ~24h, so don't use it alone to judge whether something is happening *right now*).
+- **Deploys can happen from two places**: a developer's local `npm run cdk -- deploy` and GitHub Actions on push
+  to `main` (see README's CI/CD section). Both update the same CloudFormation stack, so the latest commit on
+  `main` isn't necessarily what's live - check `aws cloudformation describe-stacks --stack-name
+  ZohoSprintsMcpStack --query 'Stacks[0].LastUpdatedTime'` (or the Lambda's `LastModified`) against `git log` if
+  you need to know what's actually deployed. Deploying locally right after pushing (so CI's deploy job is also
+  about to run) races both `cdk deploy`s for the same CloudFormation update lock; the loser fails with an opaque
+  CDK error that has nothing to do with the code - if that happens, just check the stack is `UPDATE_COMPLETE`
+  and move on rather than debugging it as a regression.
 - **App-level bearer token auth on `/mcp`**, not AWS IAM auth on the Function URL. A remote MCP client can't do
   SigV4 request signing, so `authType: NONE` on the Function URL is intentional, compensated for by the
   `Authorization: Bearer <mcpApiKey>` check in `src/server.ts`. Don't remove this check without adding an

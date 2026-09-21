@@ -57,6 +57,11 @@ Zoho ID - the server resolves names for you and calls out an ambiguous or unknow
 - Startup never crashes the process: Zoho config is loaded lazily, on first `/mcp` request, and failures return a
   clear `503` instead of taking down the whole Lambda. This matters right after a fresh deploy, when the
   Secrets Manager secret exists but is still an empty placeholder.
+- **`/mcp` only accepts POST.** The streamable-HTTP transport also supports a standalone GET for a long-lived SSE
+  notification stream, but this server builds a stateless transport per request with nothing to push and no way
+  to close that stream once opened - accepting one would just hang until Lambda's timeout, which is exactly what
+  happened once in production (a client's routine reconnect-on-notification-stream loop ran continuously,
+  burning free-tier Lambda-GB-seconds). GET/DELETE get an immediate 405 instead.
 
 ## Security
 
@@ -149,6 +154,50 @@ curl -i https://<id>.lambda-url.ap-southeast-2.on.aws/mcp \
 
 A `200` with a `serverInfo` block means it's up and authenticated. A `503` with a message about missing Zoho
 credentials means the Secrets Manager secret hasn't been populated yet - run `npm run oauth:setup`.
+
+## Checking Lambda usage/cost
+
+This runs entirely inside AWS's Lambda free tier (1M requests + 400,000 GB-seconds/month) under normal personal
+use, but it's worth knowing how to check that directly rather than waiting for a billing alert - especially
+after touching `src/server.ts` or the MCP transport, since a misbehaving/reconnecting client hammering the
+Function URL burns compute fast (see the CLAUDE.md gotcha about `/mcp` only accepting POST - that's exactly what
+happened once: an unbounded loop of 30-second, fully-billed timeouts).
+
+**Is it healthy right now** (last few minutes, real-time - CloudWatch Logs, not billing data, which lags):
+
+```bash
+FN=$(aws cloudformation describe-stack-resources --stack-name ZohoSprintsMcpStack --region ap-southeast-2 \
+  --query "StackResources[?ResourceType=='AWS::Lambda::Function'].PhysicalResourceId" --output text)
+LOG_GROUP=$(aws lambda get-function --function-name "$FN" --region ap-southeast-2 \
+  --query "Configuration.LoggingConfig.LogGroup" --output text)
+aws logs start-query --region ap-southeast-2 --log-group-name "$LOG_GROUP" \
+  --start-time $(($(date -u +%s) - 900)) --end-time $(date -u +%s) \
+  --query-string 'fields @message | filter @type="REPORT" | stats count(*) as invocations, sum(strcontains(@message, "Status: timeout")) as timeouts'
+# then: aws logs get-query-results --region ap-southeast-2 --query-id <id from above>
+```
+
+A healthy result is a small `invocations` count (personal, occasional use) and `timeouts` at 0. Any invocation
+duration pinned at exactly `30000.00 ms` in the raw logs is a timeout, not a slow-but-working request.
+
+**Cost/usage this month** (billing data, can lag up to ~24h - don't use this alone to judge "is it happening
+right now"):
+
+```bash
+aws ce get-cost-and-usage --time-period Start=$(date -u +%Y-%m-01),End=$(date -u +%Y-%m-%d) \
+  --granularity MONTHLY --metrics UsageQuantity UnblendedCost \
+  --group-by Type=DIMENSION,Key=USAGE_TYPE \
+  --filter '{"Dimensions":{"Key":"SERVICE","Values":["AWS Lambda"]}}'
+```
+
+Look for `*Lambda-GB-Second*` (the free-tier-limited metric, 400,000/month) and `*Request*`. Also useful:
+
+```bash
+aws freetier get-free-tier-usage --region us-east-1   # actual vs. limit, account-wide, all Lambda functions
+```
+
+Note the free-tier limit is **account-wide across every Lambda function**, not just this one - if this account
+runs other projects on Lambda, check `aws cloudformation describe-stacks --query "Stacks[].StackName"` across
+regions to rule those in/out before assuming this server is the cause.
 
 ## Testing
 
