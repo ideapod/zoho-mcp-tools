@@ -17,12 +17,18 @@ export function registerBacklogTools(server: McpServer, client: SprintsClient): 
     {
       title: "List backlog/kanban items",
       description:
-        "Lists work items in a project's backlog (or a specific sprint if sprintId is given), optionally " +
-        "filtered by status, epic, and/or priority. Status/epic/priority may be given as either their exact " +
-        "name or numeric ID.",
+        "Lists work items in a project. By default (no sprintId) this scans every container the project has - " +
+        "the Backlog, the Kanban board if it's a Kanban project, and every sprint if it's a Scrum project - " +
+        "since Zoho has no single endpoint that lists a project's items across all of them and an item moves " +
+        "out of the Backlog the moment its status first changes. Pass sprintId to scope to just one container " +
+        "instead (e.g. only the Backlog, or one specific sprint). Optionally filtered by status, epic, and/or " +
+        "priority - given as either their exact name or numeric ID.",
       inputSchema: {
         projectId: z.string().describe("Zoho Sprints project ID (see list_projects)"),
-        sprintId: z.string().optional().describe("Sprint ID to list from instead of the backlog"),
+        sprintId: z
+          .string()
+          .optional()
+          .describe("Scope to just this one container instead of scanning the whole project"),
         status: z.string().optional().describe("Filter by item status name or ID"),
         epic: z.string().optional().describe("Filter by epic name or ID"),
         priority: z.string().optional().describe("Filter by priority name or ID"),
@@ -33,13 +39,15 @@ export function registerBacklogTools(server: McpServer, client: SprintsClient): 
     },
     async ({ projectId, sprintId, status, epic, priority, search, index, range }) => {
       try {
-        const listId = await resolveSprintOrBacklogId(client, projectId, sprintId);
-        let items = await client.listItems(projectId, listId, {
+        const listOpts = {
           index,
           range,
-          searchby: search ? "name" : undefined,
+          searchby: search ? ("name" as const) : undefined,
           searchvalue: search,
-        });
+        };
+        let items = sprintId
+          ? await client.listItems(projectId, sprintId, listOpts)
+          : await client.listAllItems(projectId, listOpts);
 
         if (status) {
           const statuses = await client.getItemStatuses(projectId);
@@ -81,6 +89,9 @@ export function registerBacklogTools(server: McpServer, client: SprintsClient): 
     },
     async ({ projectId, itemId, sprintId }) => {
       try {
+        // Get item details never validates this container id against the item's real
+        // location (see resolveItemContainerId's doc comment) - any id, including the
+        // backlog default, returns the item's true data, so no lookup is needed here.
         const listId = await resolveSprintOrBacklogId(client, projectId, sprintId);
         const [item, comments, tagIds, allTags] = await Promise.all([
           client.getItem(projectId, listId, itemId),
@@ -158,7 +169,7 @@ export function registerBacklogTools(server: McpServer, client: SprintsClient): 
       inputSchema: {
         projectId: z.string().describe("Zoho Sprints project ID"),
         itemId: z.string().describe("Item ID"),
-        sprintId: z.string().optional().describe("Sprint the item belongs to (omit if it's in the backlog)"),
+        sprintId: z.string().optional().describe("Sprint/container the item is in, if already known (saves a lookup)"),
         title: z.string().optional(),
         description: z.string().optional(),
         itemType: z.string().optional().describe("Item type name or ID"),
@@ -169,7 +180,11 @@ export function registerBacklogTools(server: McpServer, client: SprintsClient): 
     },
     async ({ projectId, itemId, sprintId, title, description, itemType, priority, epic, status }) => {
       try {
-        const listId = await resolveSprintOrBacklogId(client, projectId, sprintId);
+        // Unlike get_item, the underlying Update item endpoint DOES validate this
+        // container id against the item's real location and rejects a mismatch, so
+        // (unless the caller already knows it) it has to be looked up rather than
+        // defaulted to the backlog - see resolveItemContainerId's doc comment.
+        const listId = await client.resolveItemContainerId(projectId, itemId, sprintId);
         const fields: Record<string, unknown> = {};
         if (title) fields.name = title;
         if (description !== undefined) fields.description = description;
@@ -208,7 +223,7 @@ export function registerBacklogTools(server: McpServer, client: SprintsClient): 
       inputSchema: {
         projectId: z.string().describe("Zoho Sprints project ID"),
         itemId: z.string().describe("Item ID"),
-        sprintId: z.string().optional().describe("Sprint the item belongs to (omit if it's in the backlog)"),
+        sprintId: z.string().optional().describe("Sprint/container the item is in, if already known (saves a lookup)"),
         tags: z.array(z.string()).min(1).describe("Tag names or IDs to associate with the item"),
         mode: z
           .enum(["replace", "add"])
@@ -218,7 +233,11 @@ export function registerBacklogTools(server: McpServer, client: SprintsClient): 
     },
     async ({ projectId, itemId, sprintId, tags, mode }) => {
       try {
-        const listId = await resolveSprintOrBacklogId(client, projectId, sprintId);
+        // Not separately confirmed live whether this write endpoint validates its
+        // container id the way Update item does, but it follows the same URL
+        // pattern, so resolve the item's real container defensively rather than
+        // risk silently defaulting to a stale backlog id.
+        const listId = await client.resolveItemContainerId(projectId, itemId, sprintId);
         const allTags = await client.listTags();
         const resolvedTags = tags.map((t) => {
           const id = resolveEntityId(allTags, t, "tags");

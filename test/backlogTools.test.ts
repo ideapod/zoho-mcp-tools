@@ -22,6 +22,11 @@ function fakeClient(overrides: Partial<Record<keyof SprintsClient, unknown>> = {
       { id: "1", title: "Item A", status: { id: "s1", name: "To Do" } },
       { id: "2", title: "Item B", status: { id: "s2", name: "Done" } },
     ]),
+    listAllItems: vi.fn(async () => [
+      { id: "1", title: "Item A", status: { id: "s1", name: "To Do" } },
+      { id: "2", title: "Item B", status: { id: "s2", name: "Done" } },
+    ]),
+    resolveItemContainerId: vi.fn(async (_p: string, _id: string, known?: string) => known ?? "backlog-1"),
     getItemStatuses: vi.fn(async () => [
       { id: "s1", name: "To Do" },
       { id: "s2", name: "Done" },
@@ -61,6 +66,38 @@ describe("backlog tools", () => {
 
     expect(items).toHaveLength(1);
     expect(items[0].id).toBe("2");
+  });
+
+  it("list_backlog_items scans every container (backlog + board/sprints) when sprintId is omitted", async () => {
+    const server = fakeServer();
+    const client = fakeClient();
+    registerBacklogTools(server as never, client);
+
+    await server.tools.get("list_backlog_items")!({ projectId: "proj-1" });
+
+    expect(client.listAllItems).toHaveBeenCalledWith("proj-1", {
+      index: undefined,
+      range: undefined,
+      searchby: undefined,
+      searchvalue: undefined,
+    });
+    expect(client.listItems).not.toHaveBeenCalled();
+  });
+
+  it("list_backlog_items scopes to a single container when sprintId is given", async () => {
+    const server = fakeServer();
+    const client = fakeClient();
+    registerBacklogTools(server as never, client);
+
+    await server.tools.get("list_backlog_items")!({ projectId: "proj-1", sprintId: "sprint-9" });
+
+    expect(client.listItems).toHaveBeenCalledWith("proj-1", "sprint-9", {
+      index: undefined,
+      range: undefined,
+      searchby: undefined,
+      searchvalue: undefined,
+    });
+    expect(client.listAllItems).not.toHaveBeenCalled();
   });
 
   it("move_item_status resolves a status name to an ID and delegates to moveItemStatus", async () => {
@@ -121,7 +158,18 @@ describe("backlog tools", () => {
 
     await server.tools.get("update_item")!({ projectId: "proj-1", itemId: "1", title: "Renamed" });
 
+    expect(client.resolveItemContainerId).toHaveBeenCalledWith("proj-1", "1", undefined);
     expect(client.updateItem).toHaveBeenCalledWith("proj-1", "backlog-1", "1", { name: "Renamed" });
+  });
+
+  it("update_item resolves the item's real container instead of assuming the backlog", async () => {
+    const server = fakeServer();
+    const client = fakeClient({ resolveItemContainerId: vi.fn(async () => "board-1") });
+    registerBacklogTools(server as never, client);
+
+    await server.tools.get("update_item")!({ projectId: "proj-1", itemId: "1", title: "Renamed" });
+
+    expect(client.updateItem).toHaveBeenCalledWith("proj-1", "board-1", "1", { name: "Renamed" });
   });
 
   it("update_item errors when no fields are provided", async () => {

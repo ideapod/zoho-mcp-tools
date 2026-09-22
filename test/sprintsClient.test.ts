@@ -392,4 +392,117 @@ describe("SprintsClient", () => {
     expect(params.get("newtags")).toBe('["t-1","t-2"]');
     expect(params.get("reassociate")).toBe("true");
   });
+
+  it("getAllContainerIds merges the backlog, Kanban board, and every real sprint", async () => {
+    const fetchMock = vi.fn(async (url: URL) => {
+      if (url.searchParams.get("action") === "getbacklog") {
+        return jsonResponse({ status: "success", backlogId: "backlog-1" });
+      }
+      if (url.searchParams.get("type") === "[7]") {
+        return jsonResponse({ status: "success", sprints: [{ sprintId: "board-1" }] });
+      }
+      if (url.searchParams.get("type") === "[1,2,3,4]") {
+        return jsonResponse({ status: "success", sprints: [{ sprintId: "sprint-a" }, { sprintId: "sprint-b" }] });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    const ids = await client.getAllContainerIds("proj-1");
+
+    expect(ids.sort()).toEqual(["backlog-1", "board-1", "sprint-a", "sprint-b"]);
+  });
+
+  it("getAllContainerIds omits the board id for a Scrum project (no Kanban board)", async () => {
+    const fetchMock = vi.fn(async (url: URL) => {
+      if (url.searchParams.get("action") === "getbacklog") {
+        return jsonResponse({ status: "success", backlogId: "backlog-1" });
+      }
+      if (url.searchParams.get("type") === "[7]") {
+        return jsonResponse({ status: "success", sprints: [] });
+      }
+      if (url.searchParams.get("type") === "[1,2,3,4]") {
+        return jsonResponse({ status: "success", sprints: [{ sprintId: "sprint-a" }] });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    const ids = await client.getAllContainerIds("proj-1");
+
+    expect(ids.sort()).toEqual(["backlog-1", "sprint-a"]);
+  });
+
+  it("listAllItems merges items fetched from every container", async () => {
+    const fetchMock = vi.fn(async (url: URL) => {
+      if (url.searchParams.get("action") === "getbacklog") {
+        return jsonResponse({ status: "success", backlogId: "backlog-1" });
+      }
+      if (url.searchParams.get("type") === "[7]") {
+        return jsonResponse({ status: "success", sprints: [{ sprintId: "board-1" }] });
+      }
+      if (url.searchParams.get("type") === "[1,2,3,4]") {
+        return jsonResponse({ status: "success", sprints: [] });
+      }
+      if (url.pathname === "/zsapi/team/111/projects/proj-1/sprints/backlog-1/item/") {
+        return jsonResponse({ status: "success", items: [{ itemId: "1" }] });
+      }
+      if (url.pathname === "/zsapi/team/111/projects/proj-1/sprints/board-1/item/") {
+        return jsonResponse({ status: "success", items: [{ itemId: "2" }] });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    const items = await client.listAllItems("proj-1");
+
+    expect(items.map((i) => i.id).sort()).toEqual(["1", "2"]);
+  });
+
+  it("resolveItemContainerId skips the lookup when knownContainerId is given", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    const containerId = await client.resolveItemContainerId("proj-1", "item-1", "known-1");
+
+    expect(containerId).toBe("known-1");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("resolveItemContainerId probes via the Kanban board id when the project has one", async () => {
+    const fetchMock = vi
+      .fn()
+      // getKanbanBoardId finds the board.
+      .mockResolvedValueOnce(jsonResponse({ status: "success", sprints: [{ sprintId: "board-1" }] }))
+      // Probe: Get item details doesn't validate the URL's sprintId segment, so this
+      // always returns the item's true data - including its real container.
+      .mockResolvedValueOnce(jsonResponse({ status: "success", items: [{ itemId: "item-1", sprintId: "board-1" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    const containerId = await client.resolveItemContainerId("proj-1", "item-1");
+
+    expect(containerId).toBe("board-1");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("resolveItemContainerId falls back to the backlog id for Scrum projects (no board)", async () => {
+    const fetchMock = vi
+      .fn()
+      // getKanbanBoardId: no sprintType-7 pseudo-sprint exists.
+      .mockResolvedValueOnce(jsonResponse({ status: "success", sprints: [] }))
+      .mockResolvedValueOnce(jsonResponse({ status: "success", backlogId: "backlog-1" }))
+      // Probe against the backlog id still returns the item's true (different) container.
+      .mockResolvedValueOnce(jsonResponse({ status: "success", items: [{ itemId: "item-1", sprintId: "sprint-3" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    const containerId = await client.resolveItemContainerId("proj-1", "item-1");
+
+    expect(containerId).toBe("sprint-3");
+  });
 });

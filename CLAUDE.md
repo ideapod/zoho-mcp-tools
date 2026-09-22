@@ -13,23 +13,6 @@ sketches what turning this into a sellable, multi-tenant product would take, and
 still unknown about listing in Zoho Marketplace. Don't build toward it without the user explicitly picking it
 up - it contradicts several of the single-user decisions below.)
 
-## Current status (2026-09-22)
-
-`create_epic` (`e1fa9a1`, fixed in `8fd6f51`) and `move_item_status`'s Kanban support (see the "Kanban status
-moves" decision below) are both fixed, tested, and **confirmed working live through the real deployed Lambda**.
-
-A `delete_epic` tool exists (`SprintsClient.deleteEpic`, DELETE `.../epic/{epicId}/`, no request body) but
-**isn't usable live yet**: it returns `HTTP 401 {"code":7601,"message":"Invalid oauthscope"}` because the
-current refresh token predates the `ZohoSprints.epic.DELETE` scope it needs. Needs an `oauth:setup` re-run
-(requires the user to generate a fresh grant code from the Zoho API console - not something a session can do
-unattended) - see the scope-rotation note below for what that breaks in the meantime.
-
-**Still needs cleanup**: four test epics are sitting in the real Story Trail project (id `6488000000010001`) -
-`Test Epic (create_epic tool check)` (`6488000000011006`), `Test Epic 2 (debug)` (`6488000000011008`), `Test
-Epic 3 (final verification)` (`6488000000011010`), `Test Epic 4 (live Lambda verification)` (`6488000000012006`).
-Once `oauth:setup` has granted `epic.DELETE`, the fastest path is calling the `delete_epic` tool directly over
-MCP - no browser needed.
-
 ## Key decisions and why (don't relitigate without new information)
 
 - **Zoho Wiki is out of scope.** It has no supported REST API (confirmed: `apihelp.wiki.zoho.com` returns
@@ -79,6 +62,57 @@ MCP - no browser needed.
     `src/mcp/tools/backlog.ts` just delegates to it. If you ever touch this again, re-read that method's doc
     comment before changing anything - the ordering (bulkupdate for backlog, plain update once on the board) and
     the "don't re-validate location with getItem-as-probe" note both matter.
+- **The same backlog/board split above also broke *listing/discovery*, not just status moves - `list_backlog_items`
+  now scans every container by default.** Confirmed live 2026-09-22: a working session searched the Story Trail
+  board for two specific cards ("org switcher", "AR turn-by-turn nav") across all statuses and epics, full-text,
+  and came back empty - and concluded the cards didn't exist and nearly recreated them. They existed the whole
+  time, already `In progress`, with accurate content - `list_backlog_items` (and `get_item`/`update_item`/
+  `update_item_tags` defaulting `sprintId` to the backlog) only ever looked at the literal Backlog pseudo-sprint,
+  and both cards had already had their first status change and moved onto the separate Kanban Board pseudo-sprint
+  (see the bullet above). `list_sprints` couldn't have caught this either - it only surfaces Scrum sprint types
+  1-4, and the Kanban board is the undocumented type 7, so a Kanban project's second container is invisible to
+  every enumeration tool that existed before this fix.
+  - Fixed by adding `SprintsClient.getAllContainerIds`/`listAllItems`, which discover every container a project
+    actually has - the Backlog, the Kanban board if `getKanbanBoardId` finds one, and every real sprint via
+    `listSprints` (type 1-4) - and merge items across all of them. `list_backlog_items` now calls this by default;
+    passing `sprintId` still scopes to just that one container (e.g. to deliberately list only the Backlog).
+  - **This generalizes to genuine Scrum sprints too, not just Kanban's board** - if this workspace ever starts
+    using real sprints, an item that's been moved into sprint 5 is exactly as invisible to a backlog-only query as
+    a Kanban card on the board was. `listAllItems` already covers that case (it merges in every sprint
+    `listSprints` returns, not just the Kanban board), but it hasn't been exercised live against an actual Scrum
+    project with real sprints - only against Story Trail, which is Kanban-only (see the "pure Kanban" bullet
+    above). If you touch this once a real Scrum project shows up, verify it actually finds sprint-contained items
+    live rather than trusting this untested-for-Scrum path.
+  - Also fixed a related but distinct bug: `update_item`/`update_item_tags` defaulted a bare `itemId` to the
+    backlog container exactly like `list_backlog_items` did, but unlike `get_item` (which is never validated
+    server-side, per the bullet above) `Update item` *does* validate its URL's `{sprintId}` segment and rejects a
+    mismatch - so updating a card that had already moved to the board without knowing to pass the board's
+    `sprintId` would fail outright. Both tools now call `SprintsClient.resolveItemContainerId`, which probes via
+    `getItem` (unvalidated, so any container ID reaches the truth) to find the item's real current container
+    before mutating it, unless the caller already supplies `sprintId`. `get_item` deliberately keeps defaulting to
+    the backlog ID without resolving anything first - it doesn't need to, since that endpoint isn't validated
+    either way.
+  - One real cost of the fix: `listAllItems` is one HTTP call per container, run every time `list_backlog_items`
+    is called without `sprintId`. Fine at this workspace's item/sprint volumes; would get slow on a project with
+    many historical sprints.
+- **Backlog/sprint item reordering (drag-to-reorder rank within the list) is a confirmed dead end - don't build a
+  `move_item_position`-style tool for it.** apidoc.html has nothing for it (its "Move item" endpoint,
+  `bulkupdate` + `action=moveitem`, moves items *across* sprints/projects, not within one - no position param at
+  all). Captured the real request the Zoho Sprints web app fires when dragging a backlog card (2026-09-22): `POST
+  {webAppHost}/zsapi/team/{teamId}/projects/{projectId}/sprints/{sprintId}/?action=updateitemsprintorder`, body
+  `{position, itemidarr}` (`position` is a 0-based target index in display order, confirmed by observation - drag
+  to display index 3 sent `position=3`). Tried it against the public OAuth API host
+  (`ZOHO_API_BASE_URL`/`sprintsapi.zoho.<dc>`) with the normal `Zoho-oauthtoken` bearer auth this whole codebase
+  otherwise uses - it fails every time with `HTTP 400 {"code":7600,"message":"Browser cookies disabled"}`, and
+  that's not a form-encoding artifact (form-urlencoded and multipart/form-data bodies both got the identical
+  error) or a wrong-host artifact (pointing `ZOHO_API_BASE_URL` at the web app's own host,
+  `sprints.zoho.<dc>/zsapi`, instead of the API host got the identical error too). Conclusion: unlike the Kanban
+  move mechanism above, this action is gated on an actual browser session (cookies + the `X-ZCSRF-TOKEN`/
+  `CT_CSRF_TOKEN` headers the captured request carried) and Zoho does not accept OAuth bearer auth for it at all
+  - it's an internal web-client action, not part of the public API surface, no matter which host or encoding you
+  throw at it. Don't re-attempt this without a genuinely new angle (e.g. if Zoho ever documents a real reorder
+  endpoint) - re-deriving the same negative result from scratch means replaying this whole investigation,
+  including a live drag capture from the user.
 - **Built from scratch, not forked from an existing OSS Zoho Sprints MCP server.** Several exist on GitHub
   (e.g. `dineshkanin/zoho-sprints-mcp`) but are unaudited third-party code that would hold real OAuth credentials
   to production data. This repo's tool surface is intentionally smaller (10 tools vs. 100+) and fully owned/auditable.
@@ -153,7 +187,21 @@ MCP - no browser needed.
   (`mcpServers.zoho-sprints.headers.Authorization`) started failing with 401s that looked like a server-side
   auth bug. After any `oauth:setup` run, update every MCP client's Authorization header to match the new
   `MCP_API_KEY` written to local `.env` - and note a client only picks up a `~/.claude.json` edit on a brand-new
-  session, not a retry inside one that's already connected.
+  session, not a retry inside one that's already connected. Two more `oauth:setup` gotchas found 2026-09-22
+  adding `epic.DELETE`: (1) Zoho's Self Client "Generate Code" tab can silently keep a **previously entered**
+  scope string instead of the one the script just printed - a re-run that added a scope to `REQUIRED_SCOPES`
+  produced a token that still lacked it, confirmed by the new token working fine for already-granted scopes
+  (`epic.READ`) but failing the new one (`HTTP 401 {"code":7601,"message":"Invalid oauthscope"}` on
+  `epic.DELETE`) - always double check the exact scope string pasted into Zoho's console matches current
+  `REQUIRED_SCOPES` verbatim. (2) The script pauses mid-run on an interactive prompt ("Push these credentials to
+  AWS Secrets Manager now?") - if that's left unanswered, the run is incomplete and nothing's actually rotated
+  yet; don't assume a rotation happened just because the script was invoked; check
+  `aws secretsmanager describe-secret ... --query LastChangedDate` and local `.env`'s mtime to confirm it
+  actually finished. A currently-connected Claude Code session's `mcp__zoho-sprints__*` tools are also
+  unaffected by tools added after that session's `tools/list` was cached (e.g. a session that connected before
+  `delete_epic` existed won't see it via `ToolSearch` either, separately from the bearer-token staleness above)
+  - the local dev server (`node dist/src/local.js` with `.env` sourced) is the reliable way to exercise a
+  brand-new tool or a freshly rotated scope without needing a new session.
 
 ## Build quirk to know about
 

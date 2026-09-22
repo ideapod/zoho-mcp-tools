@@ -312,6 +312,47 @@ export class SprintsClient {
     return (data.items ?? []).map((i) => this.normalizeItem(i));
   }
 
+  /**
+   * Every container an item in this project could actually be sitting in:
+   * the literal Backlog, the Kanban board pseudo-sprint (Kanban projects
+   * only - see getKanbanBoardId), and every real sprint (Scrum projects -
+   * type 1-4, upcoming/active/completed/canceled). A plain listItems call
+   * only ever sees one container at a time, and there is no single Zoho
+   * endpoint that lists a project's items across all of them - confirmed
+   * live 2026-09-22 after a session searching "the backlog" for two cards
+   * that had already moved onto the Kanban board (first status change out
+   * of "To do") came back empty-handed, even though both cards existed and
+   * were accurately up to date. listSprints's raw sprint records use
+   * sprintId (not the id/name shape listSprints is typed as - see its own
+   * comment), so this reads that field directly rather than trusting the
+   * declared SprintsSprint shape.
+   */
+  async getAllContainerIds(projectId: string): Promise<string[]> {
+    const [backlogId, boardId, sprints] = await Promise.all([
+      this.getProjectBacklogId(projectId),
+      this.getKanbanBoardId(projectId),
+      this.listSprints(projectId),
+    ]);
+    const sprintIds = sprints.map((s) => String((s as unknown as { sprintId: string }).sprintId));
+    return [backlogId, ...(boardId ? [boardId] : []), ...sprintIds];
+  }
+
+  /**
+   * Lists every item in a project regardless of which container it's
+   * actually sitting in (see getAllContainerIds). opts.range/opts.index are
+   * applied per container, not as a single cross-container page - fine for
+   * this workspace's item volumes, but a project with many sprints means
+   * one call per sprint every time this runs.
+   */
+  async listAllItems(
+    projectId: string,
+    opts: { index?: number; range?: number; searchby?: "id" | "name"; searchvalue?: string } = {},
+  ): Promise<SprintsItem[]> {
+    const containerIds = await this.getAllContainerIds(projectId);
+    const perContainer = await Promise.all(containerIds.map((id) => this.listItems(projectId, id, opts)));
+    return perContainer.flat();
+  }
+
   async getItem(projectId: string, sprintOrBacklogId: string, itemId: string): Promise<SprintsItem> {
     const teamId = await this.ensureTeamId();
     // Even for a single item, action=details wraps the result in an
@@ -323,6 +364,28 @@ export class SprintsClient {
     const item = data.items?.[0];
     if (!item) throw new Error(`Item ${itemId} not found.`);
     return this.normalizeItem(item);
+  }
+
+  /**
+   * Finds an item's actual current container id. Needed because, unlike Get
+   * item details (which never validates its URL's {sprintId} segment and
+   * always returns the item's true data - including its real sprintId -
+   * regardless of which container id was used to reach it), Update item and
+   * bulkupdate both DO validate that segment and reject a mismatch. A caller
+   * that defaults a bare itemId to the backlog id (the old behavior) gets a
+   * confusing HTTP 500 "Item(s) to be moved mismatch" or silently-wrong
+   * result once an item has moved off the backlog - see moveItemStatus's own
+   * doc comment for the same mismatch on the move endpoint specifically.
+   * Probes via the Kanban board id when the project has one (getKanbanBoardId
+   * is cached, so this is free after the first call), else the backlog id -
+   * the same probe strategy moveItemStatus already uses. Passing
+   * knownContainerId skips the lookup entirely.
+   */
+  async resolveItemContainerId(projectId: string, itemId: string, knownContainerId?: string): Promise<string> {
+    if (knownContainerId) return knownContainerId;
+    const probeId = (await this.getKanbanBoardId(projectId)) ?? (await this.getProjectBacklogId(projectId));
+    const item = await this.getItem(projectId, probeId, itemId);
+    return String(item.sprintId);
   }
 
   async createItem(
