@@ -27,6 +27,7 @@ notes/docs store later, Zoho WorkDrive has a confirmed, active REST API and woul
 | `update_item_tags` | Set (or add to) the tags on an item |
 | `move_item_status` | Move an item between kanban columns |
 | `add_comment` | Comment on an item |
+| `add_item_attachment` | Attach a file (e.g. a screenshot) to an item, given as base64 |
 
 Status/epic/priority/item-type parameters accept either the exact name (e.g. `"Done"`, `"Bug"`) or the numeric
 Zoho ID - the server resolves names for you and calls out an ambiguous or unknown name in the error.

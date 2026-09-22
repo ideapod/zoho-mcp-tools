@@ -490,6 +490,59 @@ describe("SprintsClient", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("addItemAttachment uploads via multipart/form-data and returns the newest attachment", async () => {
+    const fetchMock = vi
+      .fn()
+      // getKanbanBoardId: no board (Scrum-style resolveItemContainerId path).
+      .mockResolvedValueOnce(jsonResponse({ status: "success", sprints: [] }))
+      .mockResolvedValueOnce(jsonResponse({ status: "success", backlogId: "backlog-1" }))
+      // resolveItemContainerId's probe: item's real container.
+      .mockResolvedValueOnce(jsonResponse({ status: "success", items: [{ itemId: "item-1", sprintId: "backlog-1" }] }))
+      // The upload itself.
+      .mockResolvedValueOnce(
+        jsonResponse({
+          status: "success",
+          itemAttachments: {
+            "item-1": [
+              { FILENAME: "old.png", RESOURCE_ID: "r-old" },
+              { FILENAME: "repro.png", RESOURCE_ID: "r-new" },
+            ],
+          },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    const attachment = await client.addItemAttachment("proj-1", "item-1", "repro.png", Buffer.from("fake-bytes"), "image/png");
+
+    expect(attachment).toMatchObject({ FILENAME: "repro.png", RESOURCE_ID: "r-new" });
+
+    const [uploadUrl, uploadInit] = fetchMock.mock.calls[3]! as [URL, { method: string; body: FormData; headers: Record<string, string> }];
+    expect(uploadUrl.pathname).toBe("/zsapi/team/111/projects/proj-1/sprints/backlog-1/item/item-1/attachments/");
+    expect(uploadInit.method).toBe("POST");
+    expect(uploadInit.headers["Content-Type"]).toBeUndefined();
+    expect(uploadInit.body).toBeInstanceOf(FormData);
+    expect(uploadInit.body.get("action")).toBe("attachment");
+    const file = uploadInit.body.get("uploadfile") as File;
+    expect(file.name).toBe("repro.png");
+    expect(file.type).toBe("image/png");
+  });
+
+  it("addItemAttachment throws when Zoho's response has no attachments for the item", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ status: "success", sprints: [] }))
+      .mockResolvedValueOnce(jsonResponse({ status: "success", backlogId: "backlog-1" }))
+      .mockResolvedValueOnce(jsonResponse({ status: "success", items: [{ itemId: "item-1", sprintId: "backlog-1" }] }))
+      .mockResolvedValueOnce(jsonResponse({ status: "success", itemAttachments: {} }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    await expect(
+      client.addItemAttachment("proj-1", "item-1", "repro.png", Buffer.from("fake-bytes")),
+    ).rejects.toThrow(/did not return the newly uploaded attachment/);
+  });
+
   it("resolveItemContainerId falls back to the backlog id for Scrum projects (no board)", async () => {
     const fetchMock = vi
       .fn()

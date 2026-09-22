@@ -20,6 +20,14 @@ interface RequestOptions {
    * encoding it gets back {code: 7600, message: "Given JSON is invalid"}.
    */
   bodyFormat?: "form" | "json";
+  /**
+   * Used instead of `body` for the one endpoint (item attachments) whose
+   * apidoc example uses curl -F, i.e. multipart/form-data, not the
+   * form-urlencoded body every other write endpoint here wants. Passed
+   * straight through to fetch with no Content-Type header set, so fetch
+   * derives the multipart boundary itself from the FormData.
+   */
+  rawBody?: FormData;
 }
 
 interface SprintsResponse {
@@ -121,7 +129,7 @@ export class SprintsClient {
             ? { "Content-Type": isJsonBody ? "application/json" : "application/x-www-form-urlencoded" }
             : {}),
         },
-        body: options.body ? (isJsonBody ? JSON.stringify(options.body) : toFormBody(options.body)) : undefined,
+        body: options.rawBody ?? (options.body ? (isJsonBody ? JSON.stringify(options.body) : toFormBody(options.body)) : undefined),
       });
       const text = await res.text();
       const data = text ? (JSON.parse(text) as T & { status?: string; code?: number }) : ({} as T);
@@ -417,6 +425,42 @@ export class SprintsClient {
       body: fields,
     });
     return this.getItem(projectId, sprintOrBacklogId, itemId);
+  }
+
+  /**
+   * Uploads a file attachment to an item (apidoc.html#Additemattachments, Scope:
+   * ZohoSprints.items.CREATE - already in REQUIRED_SCOPES). Unlike every other write endpoint in
+   * this client, Zoho's own example for this one is multipart/form-data (curl -F), not
+   * form-urlencoded - see RequestOptions.rawBody. Like Update item, its URL takes a {sprintId}
+   * segment, so this resolves the item's actual current container the same way updateItem does
+   * (see resolveItemContainerId's doc comment) rather than risk a stale/backlog-defaulted id.
+   * The response's itemAttachments is keyed by itemId and holds every attachment on the item, not
+   * just the one just added - this returns the last entry, i.e. the newest upload.
+   */
+  async addItemAttachment(
+    projectId: string,
+    itemId: string,
+    fileName: string,
+    fileContent: Buffer,
+    mimeType?: string,
+    knownContainerId?: string,
+  ): Promise<Record<string, unknown>> {
+    const teamId = await this.ensureTeamId();
+    const sprintOrBacklogId = await this.resolveItemContainerId(projectId, itemId, knownContainerId);
+
+    const form = new FormData();
+    form.set("action", "attachment");
+    form.set("uploadfile", new Blob([fileContent], { type: mimeType || "application/octet-stream" }), fileName);
+
+    const data = await this.request<{ itemAttachments?: Record<string, Array<Record<string, unknown>>> }>(
+      `/team/${teamId}/projects/${projectId}/sprints/${sprintOrBacklogId}/item/${itemId}/attachments/`,
+      { method: "POST", rawBody: form },
+    );
+    const attachments = data.itemAttachments?.[itemId];
+    if (!attachments || attachments.length === 0) {
+      throw new Error("Zoho did not return the newly uploaded attachment.");
+    }
+    return attachments[attachments.length - 1]!;
   }
 
   /**

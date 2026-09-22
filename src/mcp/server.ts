@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { SprintsClient } from "../zoho/sprintsClient.js";
+import { registerAttachmentTools } from "./tools/attachments.js";
 import { registerBacklogTools } from "./tools/backlog.js";
 import { registerCommentTools } from "./tools/comments.js";
 import { registerEpicTools } from "./tools/epics.js";
@@ -17,6 +18,7 @@ export function createMcpServer(client: SprintsClient): McpServer {
   registerEpicTools(server, client);
   registerBacklogTools(server, client);
   registerCommentTools(server, client);
+  registerAttachmentTools(server, client);
 
   return server;
 }
