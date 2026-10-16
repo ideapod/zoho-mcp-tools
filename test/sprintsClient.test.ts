@@ -543,6 +543,43 @@ describe("SprintsClient", () => {
     ).rejects.toThrow(/did not return the newly uploaded attachment/);
   });
 
+  it("listItemChecklists reads groups, then each group's steps, mapping status to done", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ status: "success", sprints: [] }))
+      .mockResolvedValueOnce(jsonResponse({ status: "success", backlogId: "backlog-1" }))
+      .mockResolvedValueOnce(jsonResponse({ status: "success", items: [{ itemId: "item-1", sprintId: "backlog-1" }] }))
+      .mockResolvedValueOnce(jsonResponse({ status: "success", clGroups: [{ clGroupId: "g-1", clGroupName: "Steps" }] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          status: "success",
+          clItems: [
+            { clItemId: "c-1", clItemName: "one", status: 1, priority: 0, ownerId: "u-1" },
+            { clItemId: "c-2", clItemName: "two", status: 0, priority: 0, ownerId: "u-1" },
+          ],
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SprintsClient(fakeTokenManager(), "https://sprintsapi.zoho.com/zsapi", "111");
+    const groups = await client.listItemChecklists("proj-1", "item-1");
+
+    expect(groups).toEqual([
+      {
+        groupId: "g-1",
+        name: "Steps",
+        items: [
+          { id: "c-1", name: "one", done: true, priority: 0, ownerId: "u-1" },
+          { id: "c-2", name: "two", done: false, priority: 0, ownerId: "u-1" },
+        ],
+      },
+    ]);
+    const [groupsUrl] = fetchMock.mock.calls[3]! as [URL];
+    expect(groupsUrl.pathname).toBe("/zsapi/team/111/projects/proj-1/sprints/backlog-1/item/item-1/clgroup/");
+    const [itemsUrl] = fetchMock.mock.calls[4]! as [URL];
+    expect(itemsUrl.pathname).toBe("/zsapi/team/111/projects/proj-1/sprints/backlog-1/item/item-1/clgroup/g-1/clitem/");
+  });
+
   it("resolveItemContainerId falls back to the backlog id for Scrum projects (no board)", async () => {
     const fetchMock = vi
       .fn()

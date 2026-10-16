@@ -113,6 +113,15 @@ up - it contradicts several of the single-user decisions below.)
   throw at it. Don't re-attempt this without a genuinely new angle (e.g. if Zoho ever documents a real reorder
   endpoint) - re-deriving the same negative result from scratch means replaying this whole investigation,
   including a live drag capture from the user.
+- **Checklist tools (`get_item_checklists`, `add_item_checklist`, `update_checklist_item`) - apidoc.html is wrong in
+  three ways, all confirmed live 2026-10-16.** (1) Every checklist endpoint is documented as scope
+  `ZohoSprints.items.READ`; in practice the existing `items.CREATE`/`items.UPDATE` scopes already work, no new
+  scope needed. (2) The docs' *Edit checklist* URL omits `{itemId}` before `/clgroup/` and 404s ("Given URL is
+  wrong") - include it. (3) With `x-convert-response` the lists come back as plain `clGroups`/`clItems` arrays,
+  not the docs' positional `clGroupJObj`/`clItemJObj` encoding. Checklists are two-level (item -> group -> step);
+  `ownerid` is mandatory when adding a step, so it defaults to the group's creator. No delete tool: deletion
+  works via the API (`DELETE .../clgroup/{id}/`) but wasn't asked for. Intended use: put steps on items that have
+  several, instead of burying them in the description.
 - **Built from scratch, not forked from an existing OSS Zoho Sprints MCP server.** Several exist on GitHub
   (e.g. `dineshkanin/zoho-sprints-mcp`) but are unaudited third-party code that would hold real OAuth credentials
   to production data. This repo's tool surface is intentionally smaller (10 tools vs. 100+) and fully owned/auditable.

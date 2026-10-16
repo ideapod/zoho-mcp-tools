@@ -27,6 +27,9 @@ notes/docs store later, Zoho WorkDrive has a confirmed, active REST API and woul
 | `update_item_tags` | Set (or add to) the tags on an item |
 | `move_item_status` | Move an item between kanban columns |
 | `add_comment` | Comment on an item |
+| `get_item_checklists` | List an item's checklist groups and steps (with done state) |
+| `add_item_checklist` | Add steps to an item's checklist (creates a group if none given) |
+| `update_checklist_item` | Tick/untick and/or rename a checklist step |
 | `add_item_attachment` | Attach a file (e.g. a screenshot) to an item, given as base64 |
 
 Status/epic/priority/item-type parameters accept either the exact name (e.g. `"Done"`, `"Bug"`) or the numeric

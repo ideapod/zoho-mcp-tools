@@ -464,6 +464,116 @@ export class SprintsClient {
   }
 
   /**
+   * Checklist endpoints (apidoc.html#Checklist). Checklists are two levels deep: an item has
+   * checklist *groups* (clgroup), each holding checklist *items* (clitem). Like Update item, every
+   * URL takes a {sprintId} segment, so callers resolve the item's real container first. Confirmed
+   * live 2026-10-16: with x-convert-response the lists come back as plain `clGroups`/`clItems`
+   * arrays (the docs' positional clGroupJObj/clItemJObj encoding is the unconverted shape), the
+   * existing items.CREATE/items.UPDATE scopes are enough (docs say items.READ for everything), and
+   * the docs' Edit checklist URL is wrong - it omits `{itemId}` and 404s ("Given URL is wrong").
+   */
+  private checklistBase(teamId: string, projectId: string, containerId: string, itemId: string): string {
+    return `/team/${teamId}/projects/${projectId}/sprints/${containerId}/item/${itemId}/clgroup/`;
+  }
+
+  async listItemChecklists(
+    projectId: string,
+    itemId: string,
+    knownContainerId?: string,
+  ): Promise<Array<{ groupId: string; name: string; items: Array<Record<string, unknown>> }>> {
+    const teamId = await this.ensureTeamId();
+    const containerId = await this.resolveItemContainerId(projectId, itemId, knownContainerId);
+    const base = this.checklistBase(teamId, projectId, containerId, itemId);
+    const groupsData = await this.request<Record<string, unknown>>(base, {
+      query: { action: "data", index: 1, range: 100 },
+    });
+    const groups = (groupsData.clGroups as Array<Record<string, unknown>> | undefined) ?? [];
+    return Promise.all(
+      groups.map(async (g) => {
+        const groupId = String(g.clGroupId);
+        const itemsData = await this.request<Record<string, unknown>>(`${base}${groupId}/clitem/`, {
+          query: { action: "data", index: 1, range: 100 },
+        });
+        const items = ((itemsData.clItems as Array<Record<string, unknown>> | undefined) ?? []).map((i) => ({
+          id: String(i.clItemId),
+          name: i.clItemName,
+          // status 0 = open, 1 = complete (per Change checklist status)
+          done: Number(i.status) === 1,
+          priority: i.priority,
+          ownerId: i.ownerId,
+        }));
+        return { groupId, name: String(g.clGroupName), items };
+      }),
+    );
+  }
+
+  /** Adds a checklist group to an item and returns its id plus the creating user's id. */
+  async addChecklistGroup(
+    projectId: string,
+    itemId: string,
+    name: string,
+    knownContainerId?: string,
+  ): Promise<{ groupId: string; createdBy: string }> {
+    const teamId = await this.ensureTeamId();
+    const containerId = await this.resolveItemContainerId(projectId, itemId, knownContainerId);
+    const data = await this.request<Record<string, unknown>>(this.checklistBase(teamId, projectId, containerId, itemId), {
+      method: "POST",
+      body: { action: "addclgroup", clgroupname: name },
+    });
+    const group = (data.clGroups as Array<Record<string, unknown>> | undefined)?.[0];
+    if (!group) throw new Error("Zoho did not return the newly added checklist group.");
+    return { groupId: String(group.clGroupId), createdBy: String(group.createdBy) };
+  }
+
+  /**
+   * Adds checklist items to a group. `ownerid` is mandatory in Zoho's API, so it defaults to
+   * whoever owns the group (the authenticated user) when the caller doesn't say.
+   */
+  async addChecklistItems(
+    projectId: string,
+    itemId: string,
+    groupId: string,
+    names: string[],
+    ownerId: string,
+    knownContainerId?: string,
+  ): Promise<void> {
+    const teamId = await this.ensureTeamId();
+    const containerId = await this.resolveItemContainerId(projectId, itemId, knownContainerId);
+    const url = `${this.checklistBase(teamId, projectId, containerId, itemId)}${groupId}/clitem/`;
+    // Sequential, not parallel: Zoho assigns each a `sequence` position, so order matters.
+    for (const name of names) {
+      await this.request(url, {
+        method: "POST",
+        body: { clitemname: name, visibility: 0, ownerid: ownerId, priority: 0 },
+      });
+    }
+  }
+
+  async updateChecklistItem(
+    projectId: string,
+    itemId: string,
+    groupId: string,
+    clItemId: string,
+    changes: { name?: string; done?: boolean },
+    knownContainerId?: string,
+  ): Promise<void> {
+    const teamId = await this.ensureTeamId();
+    const containerId = await this.resolveItemContainerId(projectId, itemId, knownContainerId);
+    if (changes.name !== undefined) {
+      await this.request(
+        `${this.checklistBase(teamId, projectId, containerId, itemId)}${groupId}/clitem/${clItemId}/`,
+        { method: "POST", body: { action: "editclitem", clitemname: changes.name } },
+      );
+    }
+    if (changes.done !== undefined) {
+      await this.request(`${this.checklistBase(teamId, projectId, containerId, itemId)}${groupId}/clitem/${clItemId}/`, {
+        method: "POST",
+        body: { action: "changestatus", status: changes.done ? 1 : 0 },
+      });
+    }
+  }
+
+  /**
    * Finds the pseudo-sprint ID for a project's Kanban board, or undefined
    * if the project has no board (i.e. it's a Scrum project). None of this
    * is documented - apidoc.html claims a Kanban project's board ID
